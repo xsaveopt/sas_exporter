@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
 
+env:
+  VT_API_KEY: ${{ secrets.VT_API_KEY }}
+
 jobs:
   ci:
     name: Lint & build
@@ -48,6 +51,14 @@ jobs:
               -o dist/sas_exporter_linux_${arch} .
           done
 
+      - name: Scan with VirusTotal
+        if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v') && env.VT_API_KEY != '' }}
+        uses: crazy-max/ghaction-virustotal@v5
+        with:
+          vt_api_key: ${{ secrets.VT_API_KEY }}
+          request_rate: 4
+          files: dist/sas_exporter_linux_*
+
       - name: Upload dev build
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v7
@@ -79,8 +90,33 @@ jobs:
               -o dist/sas_exporter_linux_${arch} .
           done
 
+      - name: Scan with VirusTotal
+        id: vt
+        if: ${{ env.VT_API_KEY != '' }}
+        uses: crazy-max/ghaction-virustotal@v5
+        with:
+          vt_api_key: ${{ secrets.VT_API_KEY }}
+          request_rate: 4
+          files: dist/sas_exporter_linux_*
+
+      - name: VirusTotal summary
+        id: vtsum
+        if: ${{ env.VT_API_KEY != '' }}
+        shell: bash
+        run: |
+          {
+            echo "results<<EOF"
+            echo "### VirusTotal scans"
+            for f in dist/sas_exporter_linux_*; do
+              sha=$(sha256sum "$f" | cut -d ' ' -f1)
+              echo "- [$(basename "$f")](https://www.virustotal.com/gui/file/$sha)"
+            done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+          body: ${{ steps.vtsum.outputs.results }}
           files: dist/*
