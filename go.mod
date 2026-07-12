@@ -1,4 +1,4 @@
-module github.com/sratabix/sas_exporter
+module github.com/xsaveopt/sas_exporter
 
 go 1.24
 

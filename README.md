@@ -24,7 +24,7 @@ Download the binary for your architecture and run it. For a systemd service, see
 
 ```sh
 ARCH=$(uname -m); case "$ARCH" in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; esac
-curl -fL "https://github.com/sratabix/sas_exporter/releases/latest/download/sas_exporter_linux_${ARCH}" \
+curl -fL "https://github.com/xsaveopt/sas_exporter/releases/latest/download/sas_exporter_linux_${ARCH}" \
   -o ./sas_exporter && chmod +x ./sas_exporter
 ```
 

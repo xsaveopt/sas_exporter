@@ -8,7 +8,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/sratabix/sas_exporter/collector"
+	"github.com/xsaveopt/sas_exporter/collector"
 )
 
 var version = "0.1.0"

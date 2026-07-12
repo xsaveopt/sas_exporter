@@ -8,12 +8,12 @@ by hand.
 ## 1. Install the binary
 
 Download the latest release for your architecture from the
-[releases page](https://github.com/sratabix/sas_exporter/releases/latest) and
+[releases page](https://github.com/xsaveopt/sas_exporter/releases/latest) and
 copy it to `/usr/local/bin`:
 
 ```sh
 ARCH=$(uname -m); case "$ARCH" in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; esac
-curl -fL "https://github.com/sratabix/sas_exporter/releases/latest/download/sas_exporter_linux_${ARCH}" \
+curl -fL "https://github.com/xsaveopt/sas_exporter/releases/latest/download/sas_exporter_linux_${ARCH}" \
   -o /usr/local/bin/sas_exporter
 sudo chmod +x /usr/local/bin/sas_exporter
 ```
@@ -28,7 +28,7 @@ Write `/etc/systemd/system/sas_exporter.service`:
 ```ini
 [Unit]
 Description=SAS HBA Prometheus Exporter
-Documentation=https://github.com/sratabix/sas_exporter
+Documentation=https://github.com/xsaveopt/sas_exporter
 After=network.target
 
 [Service]
