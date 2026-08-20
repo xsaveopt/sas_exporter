@@ -59,6 +59,21 @@ jobs:
           request_rate: 4
           files: dist/sas_exporter_linux_*
 
+      - name: VirusTotal summary
+        if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v') && env.VT_API_KEY != '' }}
+        shell: bash
+        run: |
+          {
+            echo "### VirusTotal scans"
+            echo
+            echo "Artifacts download as a zip; hash the extracted file, not the zip."
+            echo
+            for f in dist/sas_exporter_linux_*; do
+              sha=$(sha256sum "$f" | cut -d ' ' -f1)
+              echo "- [$(basename "$f")](https://www.virustotal.com/gui/file/$sha) \`$sha\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload dev build
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v7
