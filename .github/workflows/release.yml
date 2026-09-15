@@ -4,7 +4,7 @@ on:
   push:
     branches: ["**"]
     tags:
-      - 'v*'
+      - "v*"
   pull_request:
 
 permissions:
@@ -65,9 +65,6 @@ jobs:
         run: |
           {
             echo "### VirusTotal scans"
-            echo
-            echo "Artifacts download as a zip; hash the extracted file, not the zip."
-            echo
             for f in dist/sas_exporter_linux_*; do
               sha=$(sha256sum "$f" | cut -d ' ' -f1)
               echo "- [$(basename "$f")](https://www.virustotal.com/gui/file/$sha) \`$sha\`"
