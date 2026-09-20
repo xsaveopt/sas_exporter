@@ -1,0 +1,35 @@
+
+LSI Corporation SAS2 IR Configuration Utility.
+Version 20.00.00.00 (2014.09.18)
+Copyright (c) 2008-2014 LSI Corporation. All rights reserved.
+
+Read configuration has been initiated for controller 1
+------------------------------------------------------------------------
+Controller information
+------------------------------------------------------------------------
+  Controller type                         : SAS2308
+  BIOS version                            : 7.39.02.00
+  Firmware version                        : 20.00.07.00
+  Channel description                     : 1 Serial Attached SCSI
+  Initiator ID                            : 0
+  Maximum physical devices                : 39
+  Concurrent commands supported           : 2607
+  Slot                                    : Unknown
+  Segment                                 : 0
+  Bus                                     : 129
+  Device                                  : 0
+  Function                                : 0
+  RAID Support                            : Yes
+------------------------------------------------------------------------
+Physical device information
+------------------------------------------------------------------------
+Initiator at ID #0
+------------------------------------------------------------------------
+Enclosure information
+------------------------------------------------------------------------
+  Enclosure#                              : 1
+  Logical ID                              : 50030480:00000001
+  Numslots                                : 8
+  StartSlot                               : 0
+------------------------------------------------------------------------
+SAS2IRCU: Command DISPLAY Completed Successfully.

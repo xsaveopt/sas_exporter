@@ -1,0 +1,64 @@
+
+LSI Corporation SAS2 IR Configuration Utility.
+Version 20.00.00.00 (2014.09.18)
+Copyright (c) 2008-2014 LSI Corporation. All rights reserved.
+
+Read configuration has been initiated for controller 0
+------------------------------------------------------------------------
+Controller information
+------------------------------------------------------------------------
+  Controller type                         : SAS2008
+  BIOS version                            : 7.39.02.00
+  Firmware version                        : 20.00.07.00
+  Channel description                     : 1 Serial Attached SCSI
+  Initiator ID                            : 0
+  Maximum physical devices                : 39
+  Concurrent commands supported           : 2607
+  Slot                                    : Unknown
+  Segment                                 : 0
+  Bus                                     : 2
+  Device                                  : 0
+  Function                                : 0
+  RAID Support                            : Yes
+------------------------------------------------------------------------
+Physical device information
+------------------------------------------------------------------------
+Initiator at ID #0
+
+Device is a Hard disk
+  Enclosure #                             : 1
+  Slot #                                  : 4
+  SAS Address                             : 5000c50-0-2b14-9c1d
+  State                                   : Ready (RDY)
+  Size (in MB)/(in sectors)               : 1907729/3907029167
+  Manufacturer                            : HGST
+  Model Number                            : HUS726020AL4210
+  Firmware Revision                       : A7J0
+  Serial No                               : K4H1ABCD
+  GUID                                    : 5000cca23b2c1d40
+  Protocol                                : SAS
+  Drive Type                              : SAS_HDD
+  Drive Temperature                       : 29C (84.20F)
+
+Device is a Hard disk
+  Enclosure #                             : 1
+  Slot #                                  : 5
+  SAS Address                             : 4433221-1-0500-0000
+  State                                   : Optimal (OPT)
+  Size (in MB)/(in sectors)               : 476940/976773168
+  Manufacturer                            : ATA
+  Model Number                            : Samsung SSD 860
+  Firmware Revision                       : 4B6Q
+  Serial No                               : S3Z2NB0K123456A
+  GUID                                    : 50025388a04d1234
+  Protocol                                : SATA
+  Drive Type                              : SATA_SSD
+------------------------------------------------------------------------
+Enclosure information
+------------------------------------------------------------------------
+  Enclosure#                              : 1
+  Logical ID                              : 50030480:00000000
+  Numslots                                : 8
+  StartSlot                               : 0
+------------------------------------------------------------------------
+SAS2IRCU: Command DISPLAY Completed Successfully.

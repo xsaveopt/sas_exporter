@@ -28,3 +28,4 @@ linters:
         linters:
           - errcheck
           - gocritic
+          - misspell

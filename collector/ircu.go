@@ -169,6 +169,16 @@ var (
 	toolLocks   = map[string]*sync.Mutex{}
 )
 
+type commandRunner func(ctx context.Context, name string, args ...string) ([]byte, error)
+
+func execCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = "/tmp"
+	return cmd.Output()
+}
+
+var runCommand commandRunner = execCommand
+
 func toolKey(toolPath string, args []string) string {
 	return toolPath + "\x00" + strings.Join(args, "\x00")
 }
@@ -207,9 +217,7 @@ func runTool(toolPath string, args ...string) ([]byte, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, toolPath, args...)
-	cmd.Dir = "/tmp"
-	out, err := cmd.Output()
+	out, err := runCommand(ctx, toolPath, args...)
 
 	toolCacheMu.Lock()
 	toolCache[key] = &toolResult{out: out, err: err, at: time.Now()}

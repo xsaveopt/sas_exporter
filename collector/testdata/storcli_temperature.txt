@@ -1,0 +1,33 @@
+CLI Version = 007.1017.0000.0000 May 10, 2019
+Operating system = Linux 4.19.0-17-amd64
+Controller = 0
+Status = Success
+Description = None
+
+
+Controller Properties :
+=====================
+
+------------------------------------
+Ctrl_Prop                      Value
+------------------------------------
+ROC temperature(Degree Celsius) 52
+------------------------------------
+
+
+CLI Version = 007.1017.0000.0000 May 10, 2019
+Operating system = Linux 4.19.0-17-amd64
+Controller = 1
+Status = Success
+Description = None
+
+
+Controller Properties :
+=====================
+
+------------------------------------
+Ctrl_Prop                      Value
+------------------------------------
+ROC temperature(Degree Celcius) 47
+Chip temperature(Degree Celsius) 61
+------------------------------------
