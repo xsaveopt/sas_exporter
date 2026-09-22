@@ -97,6 +97,7 @@ func (c *IrcuCollector) Describe(ch chan<- *prometheus.Desc) {
 func (c *IrcuCollector) Collect(ch chan<- prometheus.Metric) {
 	for _, tool := range c.tools {
 		controllers, devices, err := scrape(tool.path)
+		recordToolStatus(tool.name, err == nil)
 		if err != nil {
 			if !binaryNotFound(err) {
 				log.Printf("sas_exporter: %s: %v", tool.name, err)

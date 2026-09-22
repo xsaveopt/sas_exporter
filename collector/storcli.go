@@ -26,6 +26,7 @@ func (c *StorCLICollector) Describe(_ chan<- *prometheus.Desc) {}
 
 func (c *StorCLICollector) Collect(ch chan<- prometheus.Metric) {
 	out, err := runTool(c.path, "/cALL", "show", "temperature")
+	recordToolStatus("storcli", err == nil)
 	if err != nil {
 		if !binaryNotFound(err) {
 			log.Printf("sas_exporter: storcli: %v", err)
