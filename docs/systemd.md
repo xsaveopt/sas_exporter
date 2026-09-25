@@ -20,8 +20,7 @@ sudo chmod +x /usr/local/bin/sas_exporter
 
 ## 2. Install the systemd unit
 
-sas_exporter must run as root — the vendor tools (`sas2ircu`, `sas3ircu`,
-`storcli`) require direct PCI access — so there's no dedicated service user.
+sas_exporter must run as root, because the controller driver interfaces require it, so there's no dedicated service user.
 
 Write `/etc/systemd/system/sas_exporter.service`:
 
