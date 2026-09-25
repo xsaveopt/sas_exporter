@@ -1,0 +1,17 @@
+{
+  "adapters": [
+    {
+      "index": 0,
+      "host": 4,
+      "chip": "SAS4116",
+      "device_id": 165,
+      "revision": 1,
+      "subsystem_vendor_id": 4096,
+      "subsystem_device_id": 16384,
+      "pci_address": "0000:41:00.0",
+      "state": "ready",
+      "firmware_version": "8.8.1.0",
+      "personality": "eHBA"
+    }
+  ]
+}

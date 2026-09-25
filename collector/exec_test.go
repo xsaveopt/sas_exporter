@@ -3,9 +3,6 @@ package collector
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os"
-	"os/exec"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -107,35 +104,6 @@ func TestToolLockForConcurrent(t *testing.T) {
 		if m != locks[0] {
 			t.Fatalf("goroutine %d got a different mutex", i)
 		}
-	}
-}
-
-func TestBinaryNotFound(t *testing.T) {
-	_, statErr := os.Stat("testdata/definitely-absent")
-
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{"nil", nil, false},
-		{"exec not found", exec.ErrNotFound, true},
-		{"exec error wrapper", &exec.Error{Name: "sas3ircu", Err: exec.ErrNotFound}, true},
-		{"wrapped exec not found", fmt.Errorf("running LIST: %w", exec.ErrNotFound), true},
-		{"os not exist", os.ErrNotExist, true},
-		{"path error from stat", statErr, true},
-		{"wrapped path error", fmt.Errorf("running LIST: %w", statErr), true},
-		{"unrelated", errors.New("exit status 1"), false},
-		{"wrapped unrelated", fmt.Errorf("running LIST: %w", errors.New("exit status 1")), false},
-		{"permission denied", os.ErrPermission, false},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := binaryNotFound(tc.err); got != tc.want {
-				t.Errorf("binaryNotFound(%v) = %v, want %v", tc.err, got, tc.want)
-			}
-		})
 	}
 }
 

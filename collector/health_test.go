@@ -1,11 +1,7 @@
 package collector
 
 import (
-	"context"
-	"os/exec"
 	"testing"
-
-	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func resetToolStatus() {
@@ -37,43 +33,5 @@ func TestAllControllerToolsDown(t *testing.T) {
 				t.Errorf("AllControllerToolsDown() = %v, want %v", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestIrcuCollectorRecordsToolStatus(t *testing.T) {
-	resetToolStatus()
-	t.Cleanup(resetToolStatus)
-
-	stubRunner(t, func(_ context.Context, name string, _ ...string) ([]byte, error) {
-		return nil, &exec.Error{Name: name, Err: exec.ErrNotFound}
-	})
-
-	c := NewIrcuCollector("sas3ircu", "sas2ircu")
-	testutil.CollectAndCount(c, "sas_exporter_tool_up")
-
-	if !AllControllerToolsDown() {
-		t.Error("AllControllerToolsDown() = false after collect with missing binaries, want true")
-	}
-}
-
-func TestStorCLICollectorRecordsToolStatus(t *testing.T) {
-	resetToolStatus()
-	t.Cleanup(resetToolStatus)
-
-	stubRunner(t, func(_ context.Context, name string, _ ...string) ([]byte, error) {
-		return nil, &exec.Error{Name: name, Err: exec.ErrNotFound}
-	})
-
-	c := NewStorCLICollector("storcli")
-	testutil.CollectAndCount(c, "sas_exporter_tool_up")
-
-	if !AllControllerToolsDown() {
-		t.Error("AllControllerToolsDown() = false after collect with missing binary, want true")
-	}
-
-	resetToolStatus()
-	recordToolStatus("storcli", true)
-	if AllControllerToolsDown() {
-		t.Error("AllControllerToolsDown() = true with storcli up, want false")
 	}
 }

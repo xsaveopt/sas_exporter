@@ -20,6 +20,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Install Rust toolchain
+        working-directory: sasctl
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sasctl
+
+      - name: rustfmt and clippy
+        run: make -C sasctl lint
+
+      - name: cargo test
+        run: make -C sasctl test
+
+      - name: Cross-build sasctl linux/amd64+arm64
+        run: make -C sasctl build OUT=../dist
+
+      - name: Embed sasctl
+        run: cp dist/sasctl_linux_amd64 dist/sasctl_linux_arm64 internal/sasctlbin/
+
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -59,7 +79,7 @@ jobs:
         with:
           vt_api_key: ${{ secrets.VT_API_KEY }}
           request_rate: 4
-          files: dist/sas_exporter_linux_*
+          files: dist/*_linux_*
 
       - name: VirusTotal summary
         if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v') && env.VT_API_KEY != '' }}
@@ -67,7 +87,7 @@ jobs:
         run: |
           {
             echo "### VirusTotal scans"
-            for f in dist/sas_exporter_linux_*; do
+            for f in dist/*_linux_*; do
               sha=$(sha256sum "$f" | cut -d ' ' -f1)
               echo "- [$(basename "$f")](https://www.virustotal.com/gui/file/$sha) \`$sha\`"
             done
@@ -78,7 +98,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: sas_exporter-dev-${{ github.sha }}
-          path: dist/sas_exporter_linux_*
+          path: dist/*_linux_*
           retention-days: 14
 
   release:
@@ -91,13 +111,23 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Install Rust toolchain
+        working-directory: sasctl
+        run: rustup toolchain install
+
+      - name: Build sasctl
+        run: make -C sasctl build OUT=../dist
+
+      - name: Embed sasctl
+        run: cp dist/sasctl_linux_amd64 dist/sasctl_linux_arm64 internal/sasctlbin/
+
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
       - name: Build binaries
         run: |
-          mkdir dist
+          mkdir -p dist
           for arch in amd64 arm64; do
             GOOS=linux GOARCH=$arch CGO_ENABLED=0 \
               go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
@@ -111,7 +141,7 @@ jobs:
         with:
           vt_api_key: ${{ secrets.VT_API_KEY }}
           request_rate: 4
-          files: dist/sas_exporter_linux_*
+          files: dist/*_linux_*
 
       - name: VirusTotal summary
         id: vtsum
@@ -121,7 +151,7 @@ jobs:
           {
             echo "results<<EOF"
             echo "### VirusTotal scans"
-            for f in dist/sas_exporter_linux_*; do
+            for f in dist/*_linux_*; do
               sha=$(sha256sum "$f" | cut -d ' ' -f1)
               echo "- [$(basename "$f")](https://www.virustotal.com/gui/file/$sha)"
             done

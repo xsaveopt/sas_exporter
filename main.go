@@ -9,18 +9,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/xsaveopt/sas_exporter/collector"
+	"github.com/xsaveopt/sas_exporter/internal/sasctlbin"
 )
 
 var version = "0.1.0"
 
 func main() {
 	var (
-		listenAddr   = flag.String("web.listen-address", ":9856", "Address on which to expose metrics.")
-		metricsPath  = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
-		sas3ircuPath = flag.String("sas3ircu", "sas3ircu", "Path to the sas3ircu binary.")
-		sas2ircuPath = flag.String("sas2ircu", "sas2ircu", "Path to the sas2ircu binary.")
-		storCLIPath  = flag.String("storcli", "storcli", "Path to the storcli binary.")
-		hwmonRoot    = flag.String("hwmon.path", "/sys/class/hwmon", "Path to the hwmon sysfs root.")
+		listenAddr  = flag.String("web.listen-address", ":9856", "Address on which to expose metrics.")
+		metricsPath = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
+		hwmonRoot   = flag.String("hwmon.path", "/sys/class/hwmon", "Path to the hwmon sysfs root.")
 	)
 	flag.Parse()
 
@@ -28,8 +26,7 @@ func main() {
 	reg.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		collector.NewIrcuCollector(*sas3ircuPath, *sas2ircuPath),
-		collector.NewStorCLICollector(*storCLIPath),
+		collector.NewSasctlCollector(sasctlbin.Path),
 		collector.NewHwmonCollector(*hwmonRoot),
 	)
 
