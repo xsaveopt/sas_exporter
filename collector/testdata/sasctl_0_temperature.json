@@ -1,0 +1,20 @@
+[
+  {
+    "controller": 0,
+    "driver": "mpt2sas",
+    "sensors": [
+      {
+        "name": "IOC",
+        "raw": 55,
+        "unit": "C",
+        "celsius": 55.0
+      },
+      {
+        "name": "Board",
+        "raw": 104,
+        "unit": "F",
+        "celsius": 40.0
+      }
+    ]
+  }
+]

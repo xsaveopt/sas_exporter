@@ -96,8 +96,8 @@ func (c *SasctlCollector) Collect(ch chan<- prometheus.Metric) {
 			continue
 		}
 		id := strconv.Itoa(ctrl.Controller)
+		collectControllerTemperature(ch, path, id)
 		if family == familyMega {
-			collectMegaTemperature(ch, path, id)
 			continue
 		}
 		ch <- prometheus.MustNewConstMetric(
@@ -199,14 +199,20 @@ func collectDrives(ch chan<- prometheus.Metric, path, ctrl string) {
 	}
 }
 
-type megaTemperature struct {
+type temperatureEntry struct {
 	Error             *string  `json:"error"`
 	ROCCelsius        *float64 `json:"roc_celsius"`
 	ControllerCelsius *float64 `json:"controller_celsius"`
+	Sensors           []struct {
+		Name     string   `json:"name"`
+		Index    int      `json:"index"`
+		Location string   `json:"location"`
+		Celsius  *float64 `json:"celsius"`
+	} `json:"sensors"`
 }
 
-func collectMegaTemperature(ch chan<- prometheus.Metric, path, ctrl string) {
-	var entries []megaTemperature
+func collectControllerTemperature(ch chan<- prometheus.Metric, path, ctrl string) {
+	var entries []temperatureEntry
 	if err := runJSON(path, &entries, "temperature", "-c", ctrl); err != nil {
 		log.Printf("sas_exporter: %v", err)
 		return
@@ -226,6 +232,19 @@ func collectMegaTemperature(ch chan<- prometheus.Metric, path, ctrl string) {
 			ch <- prometheus.MustNewConstMetric(
 				controllerTempDesc, prometheus.GaugeValue, *temp.ControllerCelsius,
 				ctrl, "ctrl", "Ctrl temperature",
+			)
+		}
+		for _, sensor := range temp.Sensors {
+			if sensor.Celsius == nil {
+				continue
+			}
+			id, label := strings.ToLower(sensor.Name), sensor.Name+" temperature"
+			if sensor.Name == "" {
+				id, label = "sensor"+strconv.Itoa(sensor.Index), sensor.Location+" temperature"
+			}
+			ch <- prometheus.MustNewConstMetric(
+				controllerTempDesc, prometheus.GaugeValue, *sensor.Celsius,
+				ctrl, id, label,
 			)
 		}
 	}

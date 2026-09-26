@@ -68,7 +68,10 @@ func fullResponses() map[string]string {
 		"--json drive -c 0":       "sasctl_0_drives.json",
 		"--json drive -c 2":       "sasctl_2_drives.json",
 		"--json drive -c 3":       "sasctl_3_drives.json",
+		"--json temperature -c 0": "sasctl_0_temperature.json",
 		"--json temperature -c 1": "sasctl_1_temperature.json",
+		"--json temperature -c 2": "sasctl_2_temperature.json",
+		"--json temperature -c 3": "sasctl_3_temperature.json",
 	}
 }
 
@@ -111,7 +114,7 @@ func TestSasctlCollectorRegistersBesideHwmon(t *testing.T) {
 	var found bool
 	for _, f := range families {
 		if f.GetName() == "sas_controller_temperature_celsius" {
-			found = len(f.GetMetric()) == 2
+			found = len(f.GetMetric()) == 6
 		}
 	}
 	if !found {
@@ -133,8 +136,12 @@ sas_controller_info{bios_version="",controller="2",firmware_version="8.8.1.0",pc
 sas_controller_info{bios_version="8.37.00.00",controller="3",firmware_version="16.00.12.00",pci_address="0000:81:00.0",type="SAS3008"} 1
 # HELP sas_controller_temperature_celsius SAS controller temperature in Celsius.
 # TYPE sas_controller_temperature_celsius gauge
+sas_controller_temperature_celsius{controller="0",label="Board temperature",sensor="board"} 40
+sas_controller_temperature_celsius{controller="0",label="IOC temperature",sensor="ioc"} 55
 sas_controller_temperature_celsius{controller="1",label="Ctrl temperature",sensor="ctrl"} 47
 sas_controller_temperature_celsius{controller="1",label="ROC temperature",sensor="roc"} 61
+sas_controller_temperature_celsius{controller="2",label="internal temperature",sensor="sensor0"} 52
+sas_controller_temperature_celsius{controller="3",label="IOC temperature",sensor="ioc"} 62
 # HELP sas_exporter_tool_up 1 if the named sasctl family ran successfully, 0 otherwise.
 # TYPE sas_exporter_tool_up gauge
 sas_exporter_tool_up{tool="mega"} 1
@@ -230,7 +237,10 @@ func TestSasctlCollectorSkipsFailingController(t *testing.T) {
 	responses := fullResponses()
 	delete(responses, "--json drive -c 0")
 	delete(responses, "--json drive -c 2")
+	delete(responses, "--json temperature -c 0")
 	delete(responses, "--json temperature -c 1")
+	delete(responses, "--json temperature -c 2")
+	delete(responses, "--json temperature -c 3")
 	stubRunner(t, sasctlRunner(t, responses))
 
 	c := newTestCollector(t, fixedPath(fakeSasctl, nil))

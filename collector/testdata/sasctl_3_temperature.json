@@ -1,0 +1,14 @@
+[
+  {
+    "controller": 3,
+    "driver": "mpt3sas",
+    "sensors": [
+      {
+        "name": "IOC",
+        "raw": 62,
+        "unit": "C",
+        "celsius": 62.0
+      }
+    ]
+  }
+]

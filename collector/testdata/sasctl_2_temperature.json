@@ -1,0 +1,19 @@
+[
+  {
+    "controller": 2,
+    "driver": "mpi3mr",
+    "sensors": [
+      {
+        "index": 0,
+        "raw": 52,
+        "valid": true,
+        "celsius": 52,
+        "location": "internal",
+        "internal": true,
+        "istwi_index": 65535,
+        "channel": 0
+      }
+    ],
+    "drives": []
+  }
+]
