@@ -1,0 +1,10 @@
+[
+  {
+    "controller": 1,
+    "driver": "megaraid_sas",
+    "drives": [
+      {"address": "252:0", "device_id": 8, "state": "Onln", "drive_group": 0, "size_bytes": 4000225165312, "size": "3.64 TiB", "interface_code": 1, "media_type": 0, "model": "SEAGATE ST4000NM0025", "revision": "E004", "temperature_celsius": 30, "error": null},
+      {"address": "252:1", "device_id": 9, "state": "", "drive_group": null, "size_bytes": 0, "size": "", "interface_code": 0, "media_type": 0, "model": "", "revision": "", "temperature_celsius": null, "error": "firmware command failed"}
+    ]
+  }
+]

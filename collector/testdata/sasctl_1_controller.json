@@ -1,0 +1,27 @@
+[
+  {
+    "controller": 1,
+    "driver": "megaraid_sas",
+    "index": 1,
+    "host_no": 3,
+    "pci_address": "0000:03:00.0",
+    "driver_version": "07.727.03.00",
+    "controller_time": null,
+    "info": {
+      "product_name": "AVAGO MegaRAID SAS 9361-8i",
+      "serial_number": "SK12345678",
+      "bbu_present": true,
+      "alarm_present": false,
+      "ld_present": 1,
+      "ld_degraded": 1,
+      "ld_offline": 0,
+      "pd_present": 2,
+      "pd_disk_present": 2,
+      "pd_disk_pred_failure": 1,
+      "pd_disk_failed": 0,
+      "mem_correctable_errors": 3,
+      "mem_uncorrectable_errors": 0,
+      "temperatures": {"roc_celsius": 61, "controller_celsius": 47}
+    }
+  }
+]

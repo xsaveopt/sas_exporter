@@ -1,0 +1,30 @@
+[
+  {
+    "controller": 0,
+    "driver": "mpt2sas",
+    "volumes": [
+      {
+        "id": 323,
+        "name": "data",
+        "wwid": "0123456789abcdef",
+        "raid_level": "RAID1",
+        "state": "Degraded (DGD)",
+        "size_mb": 953869,
+        "max_lba": 1953525167,
+        "block_size": 512,
+        "stripe_size": 128,
+        "boot": null,
+        "members": [],
+        "status": {
+          "id": 323,
+          "state": "Degraded (DGD)",
+          "enabled": true,
+          "quiesced": false,
+          "inactive": false,
+          "current_operation": "Consistency Check",
+          "progress": {"total_blocks": 1953525168, "blocks_remaining": 976762584, "flags": 0, "elapsed_seconds": null, "percent_complete": 50.0}
+        }
+      }
+    ]
+  }
+]

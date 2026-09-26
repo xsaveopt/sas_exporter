@@ -1,0 +1,30 @@
+[
+  {
+    "controller": 1,
+    "driver": "megaraid_sas",
+    "address": "252:0",
+    "serial_number": "ZC1234",
+    "drive_group": 0,
+    "info": {
+      "device_id": 8,
+      "vendor": "SEAGATE",
+      "product": "ST4000NM0025",
+      "media_errors": 3,
+      "other_errors": 5,
+      "predictive_failures": 1,
+      "state": "Onln",
+      "progress": {
+        "rebuild": {"raw": 32768, "percent": 50.0, "elapsed_seconds": 600, "remaining_seconds": 600},
+        "patrol": null,
+        "clear": null,
+        "erase": null,
+        "copyback_active": false,
+        "locate_active": true,
+        "paused": []
+      },
+      "bad_block_table_full": false,
+      "temperature_celsius": 30,
+      "bbm_error_count": 7
+    }
+  }
+]

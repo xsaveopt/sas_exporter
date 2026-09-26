@@ -1,0 +1,13 @@
+[
+  {
+    "controller": 0,
+    "driver": "mpt2sas",
+    "index": 0,
+    "generation": "SAS2",
+    "chip": "SAS2008",
+    "firmware_version": "20.00.07.00",
+    "raid_support": false,
+    "ioc_exceptions": 0,
+    "raid_limits": null
+  }
+]

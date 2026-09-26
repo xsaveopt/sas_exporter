@@ -1,0 +1,12 @@
+[
+  {
+    "controller": 1,
+    "driver": "megaraid_sas",
+    "target_id": 0,
+    "operations": {
+      "background_init": null,
+      "consistency_check": {"raw": 16384, "percent": 25.0, "elapsed_seconds": 60, "remaining_seconds": 180},
+      "foreground_init": null
+    }
+  }
+]

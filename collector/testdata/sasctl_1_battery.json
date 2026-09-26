@@ -1,0 +1,23 @@
+[
+  {
+    "controller": 1,
+    "driver": "megaraid_sas",
+    "kind": "bbu",
+    "present_in_controller_info": true,
+    "status": {
+      "battery_type": 2,
+      "battery_type_name": "BBU",
+      "voltage_mv": 4012,
+      "current_ma": -12,
+      "temperature_celsius": 31,
+      "fw_status": 0,
+      "fw_status_flags": [],
+      "ibbu": null,
+      "bbu": {"gas_gauge_status": 0, "relative_charge_percent": 97, "charger_status": 0, "remaining_capacity_mah": 1100, "full_charge_capacity_mah": 1200, "state_of_health_good": true}
+    },
+    "capacity": {"relative_charge_percent": 96, "absolute_charge_percent": 90, "remaining_capacity_mah": 1100, "full_charge_capacity_mah": 1200, "run_time_to_empty_min": 0, "average_time_to_empty_min": 0, "average_time_to_full_min": 0, "cycle_count": 14, "max_error_percent": 2, "remaining_capacity_alarm_mah": 0, "remaining_time_alarm_min": 0},
+    "design": {"manufacture_date_raw": 0, "manufacture_date": "2019-01-01", "design_capacity_mah": 1350, "design_voltage_mv": 4100, "spec_info": 0, "serial_number": 1, "pack_stat_config": 0, "manufacturer": "LSI", "device_name": "bq27541", "device_chemistry": "LION", "manufacturer_data": ""},
+    "properties": null,
+    "error": null
+  }
+]

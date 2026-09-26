@@ -19,14 +19,19 @@ func main() {
 		listenAddr  = flag.String("web.listen-address", ":9856", "Address on which to expose metrics.")
 		metricsPath = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
 		hwmonRoot   = flag.String("hwmon.path", "/sys/class/hwmon", "Path to the hwmon sysfs root.")
+		drives      collector.DriveOptions
 	)
+	flag.BoolVar(&drives.Errors, "drive.errors", false, "Export media, other and predictive failure counts for each MegaRAID drive. This runs sasctl once per drive on every scrape.")
+	flag.BoolVar(&drives.SMART, "drive.smart", false, "Export SMART health for each MegaRAID and 9600-series drive. This runs sasctl once per drive on every scrape and can wake drives that have spun down.")
+	flag.BoolVar(&drives.Locate, "drive.locate", false, "Export whether the locate LED is on for each MegaRAID drive. This runs sasctl once per drive on every scrape.")
+	flag.BoolVar(&drives.Progress, "drive.progress", false, "Export rebuild, patrol, clear and erase progress for each MegaRAID drive. This runs sasctl once per drive on every scrape.")
 	flag.Parse()
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		collector.NewSasctlCollector(sasctlbin.Path),
+		collector.NewSasctlCollector(sasctlbin.Path, drives),
 		collector.NewHwmonCollector(*hwmonRoot),
 	)
 

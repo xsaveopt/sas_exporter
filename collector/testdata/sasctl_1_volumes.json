@@ -1,0 +1,9 @@
+[
+  {
+    "controller": 1,
+    "driver": "megaraid_sas",
+    "volumes": [
+      {"target_id": 0, "drive_group": 0, "state": "Dgrd", "raid": "RAID1", "size_bytes": 4000225165312, "size": "3.64 TiB", "cache": "RWBD", "access": "RW", "disk_cache": "Default", "name": "mirror"}
+    ]
+  }
+]

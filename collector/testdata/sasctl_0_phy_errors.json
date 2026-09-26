@@ -1,0 +1,10 @@
+[
+  {
+    "controller": 0,
+    "driver": "mpt2sas",
+    "phys": [
+      {"phy": 0, "counters": {"invalid_dword_count": 12, "running_disparity_error_count": 3, "loss_dword_synch_count": 1, "phy_reset_problem_count": 0}},
+      {"phy": 1, "counters": null}
+    ]
+  }
+]

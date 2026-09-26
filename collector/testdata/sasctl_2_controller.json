@@ -1,0 +1,12 @@
+[
+  {
+    "controller": 2,
+    "driver": "mpi3mr",
+    "index": 2,
+    "state": "operational",
+    "chip": "SAS4116",
+    "ioc_exceptions": 4,
+    "devices": {"sas_sata": 3, "pcie": 1, "virtual_disks": 0, "drives": 1, "expanders": 1, "enclosures": 1},
+    "sensors": []
+  }
+]

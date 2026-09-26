@@ -1,0 +1,13 @@
+[
+  {
+    "controller": 2,
+    "driver": "mpi3mr",
+    "address": "1:4",
+    "protocol": "NVMe",
+    "healthy": false,
+    "informational_exceptions": null,
+    "nvme": {"critical_warning": 1, "composite_temperature_kelvin": 314, "available_spare": 8, "available_spare_threshold": 10, "percentage_used": 12, "power_cycles": 42, "power_on_hours": 1234, "unsafe_shutdowns": 3, "media_errors": 0, "error_log_entries": 7},
+    "nvme_warnings": ["spare below threshold"],
+    "temperature": {"celsius": 41, "fahrenheit": 105.8}
+  }
+]

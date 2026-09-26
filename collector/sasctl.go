@@ -47,12 +47,20 @@ const (
 
 var families = []string{familyMPT, familyMPI3, familyMega}
 
-type SasctlCollector struct {
-	path func() (string, error)
+type DriveOptions struct {
+	Errors   bool
+	SMART    bool
+	Locate   bool
+	Progress bool
 }
 
-func NewSasctlCollector(path func() (string, error)) *SasctlCollector {
-	return &SasctlCollector{path: path}
+type SasctlCollector struct {
+	path   func() (string, error)
+	drives DriveOptions
+}
+
+func NewSasctlCollector(path func() (string, error), drives DriveOptions) *SasctlCollector {
+	return &SasctlCollector{path: path, drives: drives}
 }
 
 func (c *SasctlCollector) Describe(ch chan<- *prometheus.Desc) {
@@ -60,6 +68,12 @@ func (c *SasctlCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- deviceInfoDesc
 	ch <- deviceTempDesc
 	ch <- toolUpDesc
+	for _, d := range controllerDescs {
+		ch <- d
+	}
+	for _, d := range driveDescs {
+		ch <- d
+	}
 }
 
 func (c *SasctlCollector) Collect(ch chan<- prometheus.Metric) {
@@ -97,14 +111,20 @@ func (c *SasctlCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 		id := strconv.Itoa(ctrl.Controller)
 		collectControllerTemperature(ch, path, id)
-		if family == familyMega {
-			continue
-		}
 		ch <- prometheus.MustNewConstMetric(
 			controllerInfoDesc, prometheus.GaugeValue, 1,
 			id, deref(ctrl.Model), deref(ctrl.FirmwareVersion), deref(ctrl.BIOSVersion), deref(ctrl.PCIAddress),
 		)
-		collectDrives(ch, path, id)
+		collectControllerDetail(ch, path, id)
+		collectVolumes(ch, path, id, family)
+		if family == familyMega {
+			collectBattery(ch, path, id)
+			collectPatrol(ch, path, id)
+		} else {
+			collectPhys(ch, path, id)
+		}
+		drives := collectDrives(ch, path, id)
+		collectDriveDetails(ch, path, id, family, drives, c.drives)
 	}
 }
 
@@ -153,50 +173,88 @@ type controllerRow struct {
 	Error           *string `json:"error"`
 }
 
-type driveEntry struct {
-	Error  *string `json:"error"`
-	Drives []struct {
-		Enclosure    int     `json:"enclosure"`
-		Slot         int     `json:"slot"`
-		State        string  `json:"state"`
-		Protocol     string  `json:"protocol"`
-		DriveType    *string `json:"drive_type"`
-		Vendor       *string `json:"vendor"`
-		Model        *string `json:"model"`
-		SerialNumber *string `json:"serial_number"`
-		Temperature  *struct {
-			Celsius float64 `json:"celsius"`
-		} `json:"temperature"`
-	} `json:"drives"`
+type driveRow struct {
+	Address      string  `json:"address"`
+	Enclosure    *int    `json:"enclosure"`
+	Slot         *int    `json:"slot"`
+	State        string  `json:"state"`
+	Protocol     string  `json:"protocol"`
+	DriveType    *string `json:"drive_type"`
+	Vendor       *string `json:"vendor"`
+	Model        *string `json:"model"`
+	SerialNumber *string `json:"serial_number"`
+	Temperature  *struct {
+		Celsius float64 `json:"celsius"`
+	} `json:"temperature"`
+	TemperatureCelsius *float64 `json:"temperature_celsius"`
+	Error              *string  `json:"error"`
 }
 
-func collectDrives(ch chan<- prometheus.Metric, path, ctrl string) {
+type driveEntry struct {
+	Error  *string    `json:"error"`
+	Drives []driveRow `json:"drives"`
+}
+
+type driveRef struct {
+	address   string
+	enclosure string
+	slot      string
+	protocol  string
+}
+
+func (d driveRow) ref() driveRef {
+	r := driveRef{address: d.Address, protocol: d.Protocol}
+	if d.Enclosure != nil && d.Slot != nil {
+		r.enclosure, r.slot = strconv.Itoa(*d.Enclosure), strconv.Itoa(*d.Slot)
+	} else if enc, slot, ok := strings.Cut(d.Address, ":"); ok {
+		r.enclosure, r.slot = enc, slot
+	} else {
+		r.slot = d.Address
+	}
+	if r.address == "" {
+		r.address = r.enclosure + ":" + r.slot
+	}
+	return r
+}
+
+func collectDrives(ch chan<- prometheus.Metric, path, ctrl string) []driveRef {
 	var entries []driveEntry
 	if err := runJSON(path, &entries, "drive", "-c", ctrl); err != nil {
 		log.Printf("sas_exporter: %v", err)
-		return
+		return nil
 	}
+	var refs []driveRef
 	for _, e := range entries {
 		if e.Error != nil {
 			log.Printf("sas_exporter: sasctl drive -c %s: %s", ctrl, *e.Error)
 			continue
 		}
 		for _, d := range e.Drives {
-			enclosure, slot := strconv.Itoa(d.Enclosure), strconv.Itoa(d.Slot)
+			r := d.ref()
+			if d.Error != nil {
+				log.Printf("sas_exporter: sasctl drive -c %s: %s: %s", ctrl, r.address, *d.Error)
+				continue
+			}
+			refs = append(refs, r)
 			model, serial := deref(d.Model), deref(d.SerialNumber)
 			ch <- prometheus.MustNewConstMetric(
 				deviceInfoDesc, prometheus.GaugeValue, 1,
-				ctrl, enclosure, slot, stateCode(d.State), d.Protocol,
+				ctrl, r.enclosure, r.slot, stateCode(d.State), d.Protocol,
 				deref(d.DriveType), deref(d.Vendor), model, serial,
 			)
+			temp := d.TemperatureCelsius
 			if d.Temperature != nil {
+				temp = &d.Temperature.Celsius
+			}
+			if temp != nil {
 				ch <- prometheus.MustNewConstMetric(
-					deviceTempDesc, prometheus.GaugeValue, d.Temperature.Celsius,
-					ctrl, enclosure, slot, model, serial,
+					deviceTempDesc, prometheus.GaugeValue, *temp,
+					ctrl, r.enclosure, r.slot, model, serial,
 				)
 			}
 		}
 	}
+	return refs
 }
 
 type temperatureEntry struct {

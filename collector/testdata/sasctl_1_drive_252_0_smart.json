@@ -1,0 +1,26 @@
+[
+  {
+    "controller": 1,
+    "driver": "megaraid_sas",
+    "address": "252:0",
+    "device_id": 8,
+    "media_errors": 3,
+    "other_errors": 5,
+    "predictive_failures": 0,
+    "last_predictive_failure_event": 0,
+    "smart_alert": false,
+    "informational_exceptions": null,
+    "passthrough_error": null,
+    "sata": true,
+    "ata_smart": {
+      "health": "PASSED",
+      "data_checksum_ok": true,
+      "thresholds_checksum_ok": true,
+      "attributes": [
+        {"id": 5, "flags": 51, "prefailure": true, "value": 100, "worst": 100, "threshold": 10, "raw": 12, "failing_now": false, "failed_in_past": false},
+        {"id": 194, "flags": 34, "prefailure": false, "value": 70, "worst": 55, "threshold": null, "raw": 30, "failing_now": false, "failed_in_past": false}
+      ]
+    },
+    "ata_error": null
+  }
+]
