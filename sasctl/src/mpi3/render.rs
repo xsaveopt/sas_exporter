@@ -31,7 +31,7 @@ fn handle(h: u16) -> String {
 }
 
 fn sensor_table(sensors: &[Sensor], out: &mut String) {
-    let mut t = Table::new(["Sensor", "Location", "Source", "Valid", "Raw reading"]);
+    let mut t = Table::new(["Sensor", "Location", "Source", "Valid", "Temperature"]);
     for s in sensors {
         t.row([
             s.index.to_string(),
@@ -42,11 +42,8 @@ fn sensor_table(sensors: &[Sensor], out: &mut String) {
                 format!("ISTWI {} channel {}", s.istwi_index, s.channel)
             },
             yes_no(s.valid).to_string(),
-            if s.valid {
-                s.raw.to_string()
-            } else {
-                "-".to_string()
-            },
+            s.celsius
+                .map_or_else(|| "-".to_string(), |c| format!("{c} C")),
         ]);
     }
     render_table(&t, "The controller reports no temperature sensors", out);
@@ -117,7 +114,7 @@ impl Render for ControllerInfo {
                 ),
             );
         f.render(out);
-        out.push_str("\nTemperature sensors, raw readings in an undocumented unit\n");
+        out.push_str("\nTemperature sensors\n");
         sensor_table(&self.sensors, out);
     }
 }

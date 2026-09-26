@@ -78,6 +78,7 @@ pub struct Sensor {
     pub index: u8,
     pub raw: u16,
     pub valid: bool,
+    pub celsius: Option<i16>,
     pub location: &'static str,
     pub internal: bool,
     pub istwi_index: u16,
@@ -101,10 +102,13 @@ pub fn parse_io_unit_4(p: &[u8]) -> Vec<Sensor> {
             let o = 0x10 + i * 16;
             let flags = p.u8_at(o + 4);
             let istwi = p.u16_at(o + 8);
+            let raw = p.u16_at(o);
+            let valid = flags & IOUNIT4_TEMP_VALID != 0;
             Sensor {
                 index: i as u8,
-                raw: p.u16_at(o),
-                valid: flags & IOUNIT4_TEMP_VALID != 0,
+                raw,
+                valid,
+                celsius: valid.then_some(raw as i16),
                 location: sensor_location((flags >> 5) & 0x07),
                 internal: istwi == IOUNIT4_ISTWI_INTERNAL,
                 istwi_index: istwi,

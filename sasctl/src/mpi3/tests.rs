@@ -1261,8 +1261,8 @@ fn controller_show_combines_adpinfo_facts_pages_and_manifest() {
     assert!(out.contains("1000:00a5 rev 01, subsystem 1000:4000"));
     assert!(out.contains("RAID"));
     assert!(out.contains("4 SAS/SATA, 1 PCIe, 2 VD"), "{out}");
-    assert!(out.contains("undocumented unit"));
-    assert!(out.contains("52"));
+    assert!(out.contains("Temperature sensors"));
+    assert!(out.contains("52 C"));
     let upload = mock.mpt_calls(mpi::FUNCTION_CI_UPLOAD);
     assert_eq!(upload.len(), 1);
     assert_eq!(upload[0].frame(), mpi::manifest_request().frame);
@@ -1469,7 +1469,7 @@ fn phy_list_and_errors_come_from_sas_io_unit_and_phy_pages() {
 }
 
 #[test]
-fn temperature_show_prints_raw_readings_without_a_unit() {
+fn temperature_show_prints_sensor_readings_in_celsius() {
     let mut mock = rich_mock();
     let mut io4 = page(config::IO_UNIT_4, 0x30);
     io4.put_u8(0x0C, 2);
@@ -1495,7 +1495,7 @@ fn temperature_show_prints_raw_readings_without_a_unit() {
     let t = inventory::temperature(&mock).unwrap();
     let json = serde_json::to_string(&t).unwrap();
     assert!(json.contains("\"raw\":61"));
-    assert!(!json.contains("celsius"));
+    assert!(json.contains("\"celsius\":61"));
     let bare = rich_mock();
     assert!(run(&bare, false, &["temperature"]).is_err());
 }
