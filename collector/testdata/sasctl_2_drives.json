@@ -1,0 +1,40 @@
+[
+  {
+    "controller": 2,
+    "driver": "mpi3mr",
+    "drives": [
+      {
+        "address": "1:4",
+        "enclosure": 1,
+        "slot": 4,
+        "handle": 12,
+        "persistent_id": 3,
+        "protocol": "NVMe",
+        "drive_type": "NVMe_SSD",
+        "state": "healthy",
+        "access_status": 0,
+        "exposed": true,
+        "wwid": "0025385b71b0d0c1",
+        "sas_address": null,
+        "phy": null,
+        "link_rate": null,
+        "enclosure_logical_id": null,
+        "linux_channel_target": "0:3",
+        "os_device": "sdb",
+        "vendor": "NVMe",
+        "model": "Samsung SSD 980 PRO",
+        "firmware_revision": "5B2QGXA7",
+        "serial_number": "S5GXNX0T",
+        "guid": null,
+        "last_lba": null,
+        "block_size": null,
+        "size_mb": null,
+        "rotation_rate": null,
+        "temperature": {
+          "celsius": 41,
+          "fahrenheit": 105.8
+        }
+      }
+    ]
+  }
+]

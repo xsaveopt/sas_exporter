@@ -64,13 +64,11 @@ func newTestCollector(t *testing.T, path func() (string, error)) combinedCollect
 
 func fullResponses() map[string]string {
 	return map[string]string{
-		"--json mpt list":                   "sasctl_mpt_list.json",
-		"--json mpt -c 0 drive list":        "sasctl_mpt_0_drives.json",
-		"--json mpt -c 1 drive list":        "sasctl_mpt_1_drives.json",
-		"--json mpi3 list":                  "sasctl_mpi3_list.json",
-		"--json mpi3 -c 0 drive list":       "sasctl_mpi3_0_drives.json",
-		"--json mega list":                  "sasctl_mega_list.json",
-		"--json mega -c 0 temperature show": "sasctl_mega_0_temperature.json",
+		"--json controller":       "sasctl_controllers.json",
+		"--json drive -c 0":       "sasctl_0_drives.json",
+		"--json drive -c 2":       "sasctl_2_drives.json",
+		"--json drive -c 3":       "sasctl_3_drives.json",
+		"--json temperature -c 1": "sasctl_1_temperature.json",
 	}
 }
 
@@ -131,12 +129,12 @@ func TestSasctlCollectorCollect(t *testing.T) {
 # HELP sas_controller_info SAS controller information, always 1.
 # TYPE sas_controller_info gauge
 sas_controller_info{bios_version="7.39.02.00",controller="0",firmware_version="20.00.07.00",pci_address="0000:02:00.0",type="SAS2008"} 1
-sas_controller_info{bios_version="8.37.00.00",controller="1",firmware_version="16.00.12.00",pci_address="0000:81:00.0",type="SAS3008"} 1
-sas_controller_info{bios_version="",controller="0",firmware_version="8.8.1.0",pci_address="0000:41:00.0",type="SAS4116"} 1
+sas_controller_info{bios_version="",controller="2",firmware_version="8.8.1.0",pci_address="0000:41:00.0",type="SAS4116"} 1
+sas_controller_info{bios_version="8.37.00.00",controller="3",firmware_version="16.00.12.00",pci_address="0000:81:00.0",type="SAS3008"} 1
 # HELP sas_controller_temperature_celsius SAS controller temperature in Celsius.
 # TYPE sas_controller_temperature_celsius gauge
-sas_controller_temperature_celsius{controller="0",label="Ctrl temperature",sensor="ctrl"} 47
-sas_controller_temperature_celsius{controller="0",label="ROC temperature",sensor="roc"} 61
+sas_controller_temperature_celsius{controller="1",label="Ctrl temperature",sensor="ctrl"} 47
+sas_controller_temperature_celsius{controller="1",label="ROC temperature",sensor="roc"} 61
 # HELP sas_exporter_tool_up 1 if the named sasctl family ran successfully, 0 otherwise.
 # TYPE sas_exporter_tool_up gauge
 sas_exporter_tool_up{tool="mega"} 1
@@ -145,11 +143,11 @@ sas_exporter_tool_up{tool="mpt"} 1
 # HELP sas_physical_device_info SAS physical device information, always 1.
 # TYPE sas_physical_device_info gauge
 sas_physical_device_info{controller="0",drive_type="SAS_HDD",enclosure="2",manufacturer="HGST",model="HUS726040ALS210",protocol="SAS",serial="K7G1ABCD",slot="0",state="RDY"} 1
-sas_physical_device_info{controller="0",drive_type="NVMe_SSD",enclosure="1",manufacturer="NVMe",model="Samsung SSD 980 PRO",protocol="NVMe",serial="S5GXNX0T",slot="4",state="healthy"} 1
+sas_physical_device_info{controller="2",drive_type="NVMe_SSD",enclosure="1",manufacturer="NVMe",model="Samsung SSD 980 PRO",protocol="NVMe",serial="S5GXNX0T",slot="4",state="healthy"} 1
 sas_physical_device_info{controller="0",drive_type="SATA_SSD",enclosure="2",manufacturer="ATA",model="Samsung SSD 860",protocol="SATA",serial="S3Z9NB0K",slot="1",state="OPT"} 1
 # HELP sas_physical_device_temperature_celsius SAS physical device temperature in Celsius.
 # TYPE sas_physical_device_temperature_celsius gauge
-sas_physical_device_temperature_celsius{controller="0",enclosure="1",model="Samsung SSD 980 PRO",serial="S5GXNX0T",slot="4"} 41
+sas_physical_device_temperature_celsius{controller="2",enclosure="1",model="Samsung SSD 980 PRO",serial="S5GXNX0T",slot="4"} 41
 sas_physical_device_temperature_celsius{controller="0",enclosure="2",model="HUS726040ALS210",serial="K7G1ABCD",slot="0"} 34
 `
 	if err := testutil.CollectAndCompare(c, strings.NewReader(want)); err != nil {
@@ -188,7 +186,23 @@ func TestSasctlCollectorListFailure(t *testing.T) {
 	resetToolStatus()
 	t.Cleanup(resetToolStatus)
 	responses := fullResponses()
-	delete(responses, "--json mpt list")
+	delete(responses, "--json controller")
+	stubRunner(t, sasctlRunner(t, responses))
+
+	c := newTestCollector(t, fixedPath(fakeSasctl, nil))
+	if n := testutil.CollectAndCount(c, "sas_controller_info"); n != 0 {
+		t.Errorf("sas_controller_info count = %d, want 0", n)
+	}
+	if !AllControllerToolsDown() {
+		t.Error("AllControllerToolsDown() = false without a controller list")
+	}
+}
+
+func TestSasctlCollectorControllerError(t *testing.T) {
+	resetToolStatus()
+	t.Cleanup(resetToolStatus)
+	responses := fullResponses()
+	responses["--json controller"] = "sasctl_controllers_mpt_down.json"
 	stubRunner(t, sasctlRunner(t, responses))
 
 	c := newTestCollector(t, fixedPath(fakeSasctl, nil))
@@ -214,9 +228,9 @@ func TestSasctlCollectorSkipsFailingController(t *testing.T) {
 	resetToolStatus()
 	t.Cleanup(resetToolStatus)
 	responses := fullResponses()
-	delete(responses, "--json mpt -c 0 drive list")
-	delete(responses, "--json mpi3 -c 0 drive list")
-	delete(responses, "--json mega -c 0 temperature show")
+	delete(responses, "--json drive -c 0")
+	delete(responses, "--json drive -c 2")
+	delete(responses, "--json temperature -c 1")
 	stubRunner(t, sasctlRunner(t, responses))
 
 	c := newTestCollector(t, fixedPath(fakeSasctl, nil))

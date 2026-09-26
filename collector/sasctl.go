@@ -63,28 +63,61 @@ func (c *SasctlCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *SasctlCollector) Collect(ch chan<- prometheus.Metric) {
+	up := map[string]bool{}
+	defer func() {
+		for _, family := range families {
+			reportTool(ch, family, up[family])
+		}
+	}()
+
 	path, err := c.path()
 	if err != nil {
 		log.Printf("sas_exporter: sasctl: %v", err)
-		for _, family := range families {
-			reportTool(ch, family, false)
-		}
 		return
 	}
 
-	for _, family := range []string{familyMPT, familyMPI3} {
-		err = collectHBA(ch, path, family)
-		if err != nil {
-			log.Printf("sas_exporter: sasctl %s: %v", family, err)
-		}
-		reportTool(ch, family, err == nil)
+	var controllers []controllerRow
+	if err := runJSON(path, &controllers, "controller"); err != nil {
+		log.Printf("sas_exporter: %v", err)
+		return
 	}
 
-	err = collectMega(ch, path)
-	if err != nil {
-		log.Printf("sas_exporter: sasctl mega: %v", err)
+	for _, family := range families {
+		up[family] = true
 	}
-	reportTool(ch, familyMega, err == nil)
+	for _, ctrl := range controllers {
+		family := familyOf(ctrl.Driver)
+		if family == "" {
+			continue
+		}
+		if ctrl.Error != nil {
+			log.Printf("sas_exporter: sasctl controller %d: %s", ctrl.Controller, *ctrl.Error)
+			up[family] = false
+			continue
+		}
+		id := strconv.Itoa(ctrl.Controller)
+		if family == familyMega {
+			collectMegaTemperature(ch, path, id)
+			continue
+		}
+		ch <- prometheus.MustNewConstMetric(
+			controllerInfoDesc, prometheus.GaugeValue, 1,
+			id, deref(ctrl.Model), deref(ctrl.FirmwareVersion), deref(ctrl.BIOSVersion), deref(ctrl.PCIAddress),
+		)
+		collectDrives(ch, path, id)
+	}
+}
+
+func familyOf(driver string) string {
+	switch driver {
+	case "mpt2sas", "mpt3sas":
+		return familyMPT
+	case "mpi3mr":
+		return familyMPI3
+	case "megaraid_sas":
+		return familyMega
+	}
+	return ""
 }
 
 func reportTool(ch chan<- prometheus.Metric, family string, up bool) {
@@ -98,26 +131,30 @@ func reportTool(ch chan<- prometheus.Metric, family string, up bool) {
 
 func runJSON(path string, out any, args ...string) error {
 	raw, err := runTool(path, append([]string{"--json"}, args...)...)
-	if err != nil {
+	if len(raw) == 0 && err != nil {
 		return fmt.Errorf("sasctl %s: %w", strings.Join(args, " "), err)
 	}
-	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("decoding sasctl %s: %w", strings.Join(args, " "), err)
+	if jsonErr := json.Unmarshal(raw, out); jsonErr != nil {
+		if err != nil {
+			return fmt.Errorf("sasctl %s: %w", strings.Join(args, " "), err)
+		}
+		return fmt.Errorf("decoding sasctl %s: %w", strings.Join(args, " "), jsonErr)
 	}
 	return nil
 }
 
-type adapterList struct {
-	Adapters []struct {
-		Index           int     `json:"index"`
-		Chip            string  `json:"chip"`
-		PCIAddress      string  `json:"pci_address"`
-		FirmwareVersion *string `json:"firmware_version"`
-		BIOSVersion     *string `json:"bios_version"`
-	} `json:"adapters"`
+type controllerRow struct {
+	Controller      int     `json:"controller"`
+	Driver          string  `json:"driver"`
+	PCIAddress      *string `json:"pci_address"`
+	Model           *string `json:"model"`
+	FirmwareVersion *string `json:"firmware_version"`
+	BIOSVersion     *string `json:"bios_version"`
+	Error           *string `json:"error"`
 }
 
-type driveList struct {
+type driveEntry struct {
+	Error  *string `json:"error"`
 	Drives []struct {
 		Enclosure    int     `json:"enclosure"`
 		Slot         int     `json:"slot"`
@@ -133,24 +170,18 @@ type driveList struct {
 	} `json:"drives"`
 }
 
-func collectHBA(ch chan<- prometheus.Metric, path, family string) error {
-	var adapters adapterList
-	if err := runJSON(path, &adapters, family, "list"); err != nil {
-		return err
+func collectDrives(ch chan<- prometheus.Metric, path, ctrl string) {
+	var entries []driveEntry
+	if err := runJSON(path, &entries, "drive", "-c", ctrl); err != nil {
+		log.Printf("sas_exporter: %v", err)
+		return
 	}
-	for _, a := range adapters.Adapters {
-		ctrl := strconv.Itoa(a.Index)
-		ch <- prometheus.MustNewConstMetric(
-			controllerInfoDesc, prometheus.GaugeValue, 1,
-			ctrl, a.Chip, deref(a.FirmwareVersion), deref(a.BIOSVersion), a.PCIAddress,
-		)
-
-		var drives driveList
-		if err := runJSON(path, &drives, family, "-c", ctrl, "drive", "list"); err != nil {
-			log.Printf("sas_exporter: %v", err)
+	for _, e := range entries {
+		if e.Error != nil {
+			log.Printf("sas_exporter: sasctl drive -c %s: %s", ctrl, *e.Error)
 			continue
 		}
-		for _, d := range drives.Drives {
+		for _, d := range e.Drives {
 			enclosure, slot := strconv.Itoa(d.Enclosure), strconv.Itoa(d.Slot)
 			model, serial := deref(d.Model), deref(d.SerialNumber)
 			ch <- prometheus.MustNewConstMetric(
@@ -166,30 +197,23 @@ func collectHBA(ch chan<- prometheus.Metric, path, family string) error {
 			}
 		}
 	}
-	return nil
-}
-
-type megaControllerList struct {
-	Controllers []struct {
-		Index int `json:"index"`
-	} `json:"controllers"`
 }
 
 type megaTemperature struct {
+	Error             *string  `json:"error"`
 	ROCCelsius        *float64 `json:"roc_celsius"`
 	ControllerCelsius *float64 `json:"controller_celsius"`
 }
 
-func collectMega(ch chan<- prometheus.Metric, path string) error {
-	var controllers megaControllerList
-	if err := runJSON(path, &controllers, familyMega, "list"); err != nil {
-		return err
+func collectMegaTemperature(ch chan<- prometheus.Metric, path, ctrl string) {
+	var entries []megaTemperature
+	if err := runJSON(path, &entries, "temperature", "-c", ctrl); err != nil {
+		log.Printf("sas_exporter: %v", err)
+		return
 	}
-	for _, c := range controllers.Controllers {
-		ctrl := strconv.Itoa(c.Index)
-		var temp megaTemperature
-		if err := runJSON(path, &temp, familyMega, "-c", ctrl, "temperature", "show"); err != nil {
-			log.Printf("sas_exporter: %v", err)
+	for _, temp := range entries {
+		if temp.Error != nil {
+			log.Printf("sas_exporter: sasctl temperature -c %s: %s", ctrl, *temp.Error)
 			continue
 		}
 		if temp.ROCCelsius != nil {
@@ -205,7 +229,6 @@ func collectMega(ch chan<- prometheus.Metric, path string) error {
 			)
 		}
 	}
-	return nil
 }
 
 func stateCode(state string) string {

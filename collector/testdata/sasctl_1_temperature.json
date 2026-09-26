@@ -1,0 +1,9 @@
+[
+  {
+    "controller": 1,
+    "driver": "megaraid_sas",
+    "roc_celsius": 61,
+    "controller_celsius": 47,
+    "drives": []
+  }
+]

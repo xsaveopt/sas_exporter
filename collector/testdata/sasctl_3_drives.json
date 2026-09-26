@@ -1,0 +1,7 @@
+[
+  {
+    "controller": 3,
+    "driver": "mpt3sas",
+    "drives": []
+  }
+]
