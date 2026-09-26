@@ -2057,3 +2057,290 @@ fn bios_flash_sends_the_fixed_up_region_as_type_2() {
     assert!(flash::flash_bios(&mock, "x.rom", &bad).is_err());
     assert!(mock.downloads().is_empty());
 }
+
+fn execute_json(mock: &Mock, args: &[&str]) -> serde_json::Value {
+    let command = crate::cli::try_parse(args).unwrap();
+    crate::tests::enveloped(
+        0,
+        "mpt2sas",
+        cli::execute(&command, &ctx(false), &target(), mock),
+    )
+}
+
+fn is_wwn(s: &str) -> bool {
+    s.len() == 16
+        && s.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
+#[test]
+fn drive_json_matches_the_go_fixtures() {
+    use crate::tests::{assert_matches_fixture, go_fixture};
+    let mut mock = Mock::sas3();
+    add_sas_disk(&mut mock);
+    let real = execute_json(&mock, &["drive"]);
+    assert!(real[0]["error"].is_null(), "{real}");
+    for name in ["sasctl_0_drives.json", "sasctl_3_drives.json"] {
+        let fixture = go_fixture(name);
+        assert_matches_fixture(&real, &fixture, name);
+        for d in fixture[0]["drives"].as_array().unwrap() {
+            let kind = d["kind"].as_str().unwrap();
+            assert!(
+                ["disk", "enclosure services", "other"].contains(&kind),
+                "{name}: kind {kind:?} is not one sasctl emits"
+            );
+            for key in ["sas_address", "device_name"] {
+                let v = d[key].as_str().unwrap();
+                assert!(
+                    is_wwn(v),
+                    "{name}: {key} {v:?} is not how sasctl prints a WWN"
+                );
+            }
+        }
+    }
+    let d = &real[0]["drives"][0];
+    assert_eq!(d["state"], "Ready (RDY)");
+    assert_eq!(d["temperature"]["celsius"], 34);
+    assert!(is_wwn(d["sas_address"].as_str().unwrap()));
+}
+
+#[test]
+fn temperature_json_matches_the_go_fixtures() {
+    use crate::tests::{assert_matches_fixture, go_fixture};
+    let mut mock = Mock::sas3();
+    let mut p = std_page(config::IO_UNIT_7, 0x28);
+    p.put_u16(0x10, 55);
+    p.put_u8(0x12, 0x02);
+    p.put_u16(0x14, 104);
+    p.put_u8(0x16, 0x01);
+    mock.page(config::IO_UNIT_7, 0, p);
+    let real = execute_json(&mock, &["temperature"]);
+    for name in ["sasctl_0_temperature.json", "sasctl_3_temperature.json"] {
+        assert_matches_fixture(&real, &go_fixture(name), name);
+    }
+    assert_eq!(real[0]["sensors"][1]["celsius"], 40.0);
+    assert_eq!(real[0]["sensors"][1]["unit"], "F");
+}
+
+#[test]
+fn failed_read_is_enveloped_as_an_error_string() {
+    let mock = Mock::sas3();
+    let real = execute_json(&mock, &["temperature"]);
+    assert_eq!(real[0]["controller"], 0);
+    assert_eq!(real[0]["driver"], "mpt2sas");
+    assert!(real[0]["error"].is_string(), "{real}");
+    assert!(real[0].get("sensors").is_none());
+}
+
+fn raid_actions_sent(mock: &Mock) -> Vec<Sent> {
+    mock.sent()
+        .into_iter()
+        .filter(|s| s.frame[3] == mpi::FUNCTION_RAID_ACTION)
+        .collect()
+}
+
+#[test]
+fn confirmed_controller_reset_issues_one_hard_reset_ioctl() {
+    let mock = Mock::sas3();
+    let out = run(&mock, true, &["controller", "reset"]).unwrap();
+    assert!(out.contains("controller 0 reset requested"), "{out}");
+    let calls = mock.raw_calls.borrow();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        (calls[0].0, calls[0].1),
+        (super::transport::NR_HARDRESET, diag::HARDRESET_LEN)
+    );
+    assert!(mock.sent().is_empty());
+}
+
+#[test]
+fn confirmed_online_sends_the_physdisk_number() {
+    let mut mock = Mock::sas3();
+    add_volume(&mut mock);
+    mock.page(
+        config::SAS_DEVICE_0,
+        0xFFFF,
+        sas_device(0x0C, 2, 1, SAS_DISK, 0x5001),
+    );
+    let out = run(&mock, true, &["drive", "2:1", "online"]).unwrap();
+    assert!(out.contains("2:1 brought online"), "{out}");
+    let actions = raid_actions_sent(&mock);
+    assert_eq!(actions.len(), 1);
+    assert_eq!(
+        (actions[0].frame[0], actions[0].frame[0x06]),
+        (raid::ACTION_PHYSDISK_ONLINE, 1)
+    );
+    let err = run(&Mock::sas3(), true, &["drive", "2:1", "online"]).unwrap_err();
+    assert!(err.to_string().contains("2:1"), "{err}");
+}
+
+#[test]
+fn confirmed_volume_activate_and_check_address_the_volume_handle() {
+    let mut mock = Mock::sas3();
+    add_volume(&mut mock);
+    mock.replies.remove(&mpi::FUNCTION_RAID_ACTION);
+    let out = run(&mock, true, &["volume", "323", "activate"]).unwrap();
+    assert!(out.contains("volume 323 activated"), "{out}");
+    let out = run(&mock, true, &["volume", "323", "check"]).unwrap();
+    assert!(
+        out.contains("consistency check started on volume 323"),
+        "{out}"
+    );
+    let actions = raid_actions_sent(&mock);
+    assert_eq!(actions.len(), 2);
+    assert_eq!(actions[0].frame[0], raid::ACTION_ACTIVATE_VOLUME);
+    assert_eq!(actions[0].frame.u16_at(0x04), 0x143);
+    assert_eq!(actions[1].frame[0], raid::ACTION_START_RAID_FUNCTION);
+    assert_eq!(actions[1].frame.u16_at(0x04), 0x143);
+    assert_eq!(
+        (actions[1].frame[0x10], actions[1].frame[0x11]),
+        (
+            raid::RAID_FUNCTION_CONSISTENCY_CHECK,
+            raid::RAID_FUNCTION_START_NEW
+        )
+    );
+}
+
+#[test]
+fn confirmed_phy_reset_picks_link_or_hard() {
+    let mock = Mock::sas3();
+    let out = run(&mock, true, &["phy", "3", "reset"]).unwrap();
+    assert!(out.contains("phy 3 link reset"), "{out}");
+    let out = run(&mock, true, &["phy", "0:5", "reset", "--hard"]).unwrap();
+    assert!(out.contains("phy 5 hard reset"), "{out}");
+    let sent = mock.sent();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0].frame, mpi::phy_reset_request(3, false).frame);
+    assert_eq!(sent[1].frame, mpi::phy_reset_request(5, true).frame);
+    assert_eq!(
+        (sent[0].frame[0], sent[1].frame[0]),
+        (mpi::SAS_OP_PHY_LINK_RESET, mpi::SAS_OP_PHY_HARD_RESET)
+    );
+}
+
+#[test]
+fn confirmed_event_enable_turns_on_every_event() {
+    let mock = Mock::sas3();
+    let out = run(&mock, true, &["event", "enable"]).unwrap();
+    assert!(
+        out.contains("event logging enabled on controller 0"),
+        "{out}"
+    );
+    let calls = mock.raw_calls.borrow();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        (calls[0].0, calls[0].1),
+        (super::transport::NR_EVENTENABLE, diag::EVENTENABLE_LEN)
+    );
+    assert_eq!(calls[0].2, diag::event_enable_buffer([u32::MAX; 4]));
+}
+
+#[test]
+fn confirmed_diag_register_uses_the_generation_default_id() {
+    let mock = Mock::sas3();
+    let out = run(
+        &mock,
+        true,
+        &["diag", "register", "snapshot", "--size", "4096"],
+    )
+    .unwrap();
+    assert!(out.contains("0x4252434d"), "{out}");
+    let sas2 = Mock {
+        generation: Some(Generation::Sas2),
+        ..Default::default()
+    };
+    run(
+        &sas2,
+        true,
+        &[
+            "diag",
+            "register",
+            "trace",
+            "--size",
+            "8",
+            "--unique-id",
+            "0x10",
+            "--diagnostic-flags",
+            "3",
+        ],
+    )
+    .unwrap();
+    run(&sas2, true, &["diag", "register", "trace", "--size", "8"]).unwrap();
+    let calls = mock.raw_calls.borrow();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].2,
+        diag::register_buffer(BufferType::Snapshot, 4096, diag::MPT3_DEFAULT_UNIQUE_ID, 0)
+    );
+    let calls = sas2.raw_calls.borrow();
+    assert_eq!(
+        calls[0].2,
+        diag::register_buffer(BufferType::Trace, 8, 0x10, 3)
+    );
+    assert_eq!(calls[1].2.u32_at(0x74), diag::MPT2_DEFAULT_UNIQUE_ID);
+}
+
+#[test]
+fn diag_register_refuses_bad_sizes_and_ids_before_the_ioctl() {
+    let mock = Mock::sas3();
+    for args in [
+        &["diag", "register", "trace", "--size", "6"][..],
+        &["diag", "register", "trace", "--size", "0"],
+        &[
+            "diag",
+            "register",
+            "trace",
+            "--size",
+            "8",
+            "--unique-id",
+            "0",
+        ],
+    ] {
+        assert!(run(&mock, true, args).is_err(), "{args:?}");
+    }
+    assert!(mock.raw_calls.borrow().is_empty());
+}
+
+#[test]
+fn confirmed_diag_release_and_unregister_pass_the_unique_id() {
+    let mock = Mock::sas3();
+    let out = run(&mock, true, &["diag", "release", "0x4252434d"]).unwrap();
+    assert!(out.contains("0x4252434d released"), "{out}");
+    let out = run(&mock, true, &["diag", "unregister", "17"]).unwrap();
+    assert!(out.contains("0x00000011 unregistered"), "{out}");
+    let calls = mock.raw_calls.borrow();
+    assert_eq!(
+        (calls[0].0, calls[0].1, calls[0].2.u32_at(0x0C)),
+        (
+            super::transport::NR_DIAGRELEASE,
+            diag::RELEASE_LEN,
+            0x4252_434D
+        )
+    );
+    assert_eq!(
+        (calls[1].0, calls[1].1, calls[1].2.u32_at(0x0C)),
+        (
+            super::transport::NR_DIAGUNREGISTER,
+            diag::UNREGISTER_LEN,
+            17
+        )
+    );
+}
+
+#[test]
+fn unsupported_commands_name_the_driver() {
+    let mock = Mock::sas3();
+    for args in [
+        &["battery"][..],
+        &["patrol"],
+        &["controller", "time"],
+        &["drive", "2:0", "smart"],
+    ] {
+        let err = run(&mock, true, args).unwrap_err();
+        assert!(
+            err.to_string().contains("mpt2sas and mpt3sas"),
+            "{args:?}: {err}"
+        );
+    }
+    assert_eq!(mock.writes(), 0);
+}

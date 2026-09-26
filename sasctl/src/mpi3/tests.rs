@@ -1641,3 +1641,64 @@ fn drive_address_parses_enclosure_and_slot() {
     assert!("2".parse::<DriveAddress>().is_err());
     assert!("x:1".parse::<DriveAddress>().is_err());
 }
+
+fn execute_json(mock: &Mock, args: &[&str]) -> serde_json::Value {
+    let command = crate::cli::try_parse(args).unwrap();
+    crate::tests::enveloped(
+        2,
+        "mpi3mr",
+        cli::execute(
+            &command,
+            &ctx(false, PathBuf::from("/nonexistent")),
+            &target(),
+            mock,
+        ),
+    )
+}
+
+#[test]
+fn drive_json_matches_the_go_fixture() {
+    use crate::tests::{assert_matches_fixture, go_fixture};
+    let mock = rich_mock();
+    let real = execute_json(&mock, &["drive"]);
+    assert!(real[0]["error"].is_null(), "{real}");
+    assert_matches_fixture(
+        &real,
+        &go_fixture("sasctl_2_drives.json"),
+        "sasctl_2_drives.json",
+    );
+    let drives = real[0]["drives"].as_array().unwrap();
+    let nvme = drives
+        .iter()
+        .find(|d| d["protocol"] == "NVMe")
+        .expect("an NVMe drive");
+    assert_eq!(nvme["drive_type"], "NVMe_SSD");
+    assert_eq!(nvme["temperature"]["celsius"], 37);
+    let sas = drives.iter().find(|d| d["address"] == "2:0").unwrap();
+    assert_eq!(sas["temperature"]["celsius"], 34);
+}
+
+#[test]
+fn temperature_json_matches_the_go_fixture() {
+    use crate::tests::{assert_matches_fixture, go_fixture};
+    let mut mock = rich_mock();
+    let mut io4 = page(config::IO_UNIT_4, 0x30);
+    io4.put_u8(0x0C, 2);
+    io4.put_u16(0x10, 52);
+    io4.put_u8(0x14, 0x01);
+    io4.put_u16(0x18, 0xFFFF);
+    io4.put_u16(0x20, 44);
+    io4.put_u8(0x24, 2 << 5);
+    mock.page(config::IO_UNIT_4, 0, io4);
+    let real = execute_json(&mock, &["temperature"]);
+    assert!(real[0]["error"].is_null(), "{real}");
+    assert_matches_fixture(
+        &real,
+        &go_fixture("sasctl_2_temperature.json"),
+        "sasctl_2_temperature.json",
+    );
+    let sensors = real[0]["sensors"].as_array().unwrap();
+    assert_eq!(sensors[0]["celsius"], 52);
+    assert_eq!(sensors[0]["internal"], true);
+    assert!(sensors[1]["celsius"].is_null(), "{real}");
+}

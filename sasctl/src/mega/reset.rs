@@ -103,4 +103,58 @@ mod tests {
         let e = check_allowed(&CtrlProps::parse(&raw)).unwrap_err();
         assert!(e.to_string().contains("refused"));
     }
+
+    #[test]
+    fn find_sg_node_skips_foreign_names_and_non_device_links() {
+        let root = fake("test-mega-reset-skip", &[("sg7", "4:0:0:0")]);
+        let host_dir = root.join("devices/pci0000:00/0000:03:00.0/host4");
+        for name in ["bsg1", "sgx"] {
+            let class = root.join("class/scsi_generic").join(name);
+            fs::create_dir_all(&class).unwrap();
+            std::os::unix::fs::symlink(
+                root.join("devices/pci0000:00/0000:03:00.0/host4/target4:0:0/4:0:0:0"),
+                class.join("device"),
+            )
+            .unwrap();
+        }
+        let class = root.join("class/scsi_generic/sg2");
+        fs::create_dir_all(&class).unwrap();
+        std::os::unix::fs::symlink(&host_dir, class.join("device")).unwrap();
+        let class = root.join("class/scsi_generic/sg1");
+        fs::create_dir_all(&class).unwrap();
+        let found = find_sg_node(&root, 4);
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(found.unwrap(), "sg7");
+    }
+
+    #[test]
+    fn find_sg_node_needs_the_scsi_generic_class() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-mega-reset-none");
+        let _ = fs::remove_dir_all(&root);
+        let err = find_sg_node(&root, 0).unwrap_err();
+        assert!(err.to_string().contains("class/scsi_generic"), "{err}");
+    }
+
+    #[test]
+    fn sg_reset_host_names_the_host_without_a_node() {
+        let root = fake("test-mega-reset-nohost", &[("sg0", "0:0:0:0")]);
+        let err = sg_reset_host(&root, 6).unwrap_err();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            err.to_string()
+                .contains("no SCSI generic device belongs to host 6"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn sg_reset_host_opens_the_dev_node_it_found() {
+        let root = fake("test-mega-reset-open", &[("sg987", "6:2:0:0")]);
+        let err = sg_reset_host(&root, 6).unwrap_err();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            format!("{err:#}").starts_with("opening /dev/sg987"),
+            "{err:#}"
+        );
+    }
 }

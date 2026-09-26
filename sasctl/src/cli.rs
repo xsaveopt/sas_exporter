@@ -845,4 +845,126 @@ mod tests {
                 .is_err()
         );
     }
+
+    #[test]
+    fn parse_u32_takes_decimal_and_hex() {
+        assert_eq!(parse_u32("17"), Ok(17));
+        assert_eq!(parse_u32("0x4252434d"), Ok(0x4252_434D));
+        assert_eq!(parse_u32("0X10"), Ok(16));
+        assert_eq!(parse_u32("4294967295"), Ok(u32::MAX));
+        for bad in ["", "0x", "0xZZ", "-1", "4294967296", "0x100000000", " 1"] {
+            let err = parse_u32(bad).unwrap_err();
+            assert!(
+                err.starts_with(&format!("invalid number {bad:?}")),
+                "{bad:?}: {err}"
+            );
+        }
+        let Command::Diag {
+            action: DiagAction::Release { unique_id },
+        } = parse(&["diag", "release", "0x10"])
+        else {
+            panic!("not a diag release");
+        };
+        assert_eq!(unique_id, 16);
+        assert!(try_parse(&["diag", "release", "0xZZ"]).is_err());
+    }
+
+    #[test]
+    fn missing_object_names_the_listing_to_run_instead() {
+        let (noun, list) = parse(&["drive", "locate"]).missing_object().unwrap();
+        assert_eq!(noun, "drive");
+        assert!(matches!(
+            list,
+            Command::Drive {
+                id: None,
+                action: None
+            }
+        ));
+        let (noun, list) = parse(&["volume", "delete"]).missing_object().unwrap();
+        assert_eq!(noun, "volume");
+        assert!(matches!(
+            list,
+            Command::Volume {
+                id: None,
+                action: None
+            }
+        ));
+        let (noun, list) = parse(&["phy", "reset"]).missing_object().unwrap();
+        assert_eq!(noun, "phy");
+        assert!(matches!(
+            list,
+            Command::Phy {
+                id: None,
+                action: None
+            }
+        ));
+        for argv in [
+            &["drive"][..],
+            &["drive", "2:1", "locate"],
+            &["volume"],
+            &["volume", "3", "delete"],
+            &["volume", "create", "1", "2:0", "2:1"],
+            &["phy"],
+            &["phy", "errors"],
+            &["phy", "2", "reset"],
+            &["temperature"],
+        ] {
+            assert!(parse(argv).missing_object().is_none(), "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn phy_ids_parse_with_and_without_a_controller() {
+        assert_eq!(
+            "3".parse::<PhyId>(),
+            Ok(PhyId {
+                controller: None,
+                phy: 3
+            })
+        );
+        assert_eq!(
+            "1:7".parse::<PhyId>(),
+            Ok(PhyId {
+                controller: Some(1),
+                phy: 7
+            })
+        );
+        assert_eq!("256".parse::<PhyId>().unwrap_err(), "invalid phy \"256\"");
+        assert_eq!(
+            "x:1".parse::<PhyId>().unwrap_err(),
+            "invalid controller \"x\" in \"x:1\""
+        );
+        assert_eq!(
+            "0:1:2".parse::<PhyId>().unwrap_err(),
+            "\"0:1:2\" has too many parts"
+        );
+        assert!("".parse::<PhyId>().is_err());
+    }
+
+    #[test]
+    fn volume_ids_narrow_to_a_byte() {
+        let v: VolumeId = "255".parse().unwrap();
+        assert_eq!(v.narrow().unwrap(), 255);
+        let v: VolumeId = "0:256".parse().unwrap();
+        assert_eq!(v.to_string(), "0:256");
+        assert_eq!(
+            v.narrow().unwrap_err().to_string(),
+            "volume 256 is out of range"
+        );
+        assert!("65536".parse::<VolumeId>().is_err());
+        assert!("-1".parse::<VolumeId>().is_err());
+    }
+
+    #[test]
+    fn drive_ids_need_a_slot() {
+        assert_eq!(
+            "".parse::<DriveId>().unwrap_err(),
+            "\"\" is missing the slot"
+        );
+        assert!("x:2:3".parse::<DriveId>().is_err());
+        let d: DriveId = "0:32:4".parse().unwrap();
+        assert_eq!(d.to_string(), "0:32:4");
+        let d: DriveId = "32:4".parse().unwrap();
+        assert_eq!(d.to_string(), "32:4");
+    }
 }

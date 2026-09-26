@@ -254,4 +254,89 @@ mod tests {
         l.render(&mut out);
         assert!(out.contains("error:"), "{out}");
     }
+
+    fn filled_row() -> ControllerRow {
+        ControllerRow {
+            controller: 0,
+            driver: "mpt3sas".into(),
+            host: 2,
+            pci_address: Some("0000:01:00.0".into()),
+            model: Some("SAS3008".into()),
+            serial_number: Some("SERIAL".into()),
+            firmware_version: Some("16.00.12.00".into()),
+            bios_version: Some("8.37.00.00".into()),
+            state: Some("ready".into()),
+            error: Some("failed".into()),
+        }
+    }
+
+    #[test]
+    fn controller_list_json_matches_the_go_fixtures() {
+        use crate::output::Emit;
+        use crate::tests::{assert_matches_fixture, go_fixture};
+        let full = ControllerList {
+            controllers: vec![filled_row()],
+        }
+        .json()
+        .unwrap();
+        assert!(full.is_array(), "{full}");
+        for name in [
+            "sasctl_controllers.json",
+            "sasctl_controllers_mpt_down.json",
+        ] {
+            assert_matches_fixture(&full, &go_fixture(name), name);
+        }
+        let failed = list(&[mega(70000, "0000:03:00.0")]).json().unwrap();
+        assert!(failed[0]["error"].is_string(), "{failed}");
+        assert!(failed[0]["firmware_version"].is_null(), "{failed}");
+        assert_matches_fixture(
+            &failed,
+            &go_fixture("sasctl_controllers_mpt_down.json"),
+            "sasctl_controllers_mpt_down.json",
+        );
+    }
+
+    #[test]
+    fn list_text_prefers_the_error_then_the_state() {
+        let mut ok = filled_row();
+        ok.error = None;
+        let mut plain = ok.clone();
+        plain.state = None;
+        plain.controller = 1;
+        let mut broken = filled_row();
+        broken.controller = 2;
+        let l = ControllerList {
+            controllers: vec![ok, plain, broken],
+        };
+        let mut out = String::new();
+        l.render(&mut out);
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[2].ends_with("ready"), "{out}");
+        assert!(lines[3].ends_with("ok"), "{out}");
+        assert!(lines[4].ends_with("error: failed"), "{out}");
+        let mut empty = String::new();
+        ControllerList::default().render(&mut empty);
+        assert_eq!(empty, "No supported controllers found\n");
+    }
+
+    #[test]
+    fn label_names_the_pci_address_when_known() {
+        let c = mega(1, "0000:03:00.0");
+        assert_eq!(c.label(), "Controller 99, megaraid_sas at 0000:03:00.0");
+        let mut c = c;
+        c.pci_address = None;
+        assert_eq!(c.label(), "Controller 99, megaraid_sas");
+    }
+
+    #[test]
+    fn controllers_without_a_pci_address_sort_last_by_host() {
+        let mut a = mega(9, "0000:03:00.0");
+        a.pci_address = None;
+        let mut b = mega(2, "0000:03:00.0");
+        b.pci_address = None;
+        let c = mega(5, "0000:81:00.0");
+        let ordered = order(vec![a, b, c]);
+        let hosts: Vec<(usize, u32)> = ordered.iter().map(|c| (c.id, c.host_no)).collect();
+        assert_eq!(hosts, vec![(0, 5), (1, 2), (2, 9)]);
+    }
 }

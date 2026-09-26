@@ -165,4 +165,55 @@ mod tests {
         assert_eq!(calls[0].bufs[0].len(), 1024);
         assert_eq!(calls[1].bufs[0].len(), 3000);
     }
+
+    fn sized(size: usize) -> Vec<u8> {
+        let mut b = vec![0u8; VARIABLE_FIRST_READ];
+        b[..4].copy_from_slice(&(size as u32).to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn variable_reads_refuse_an_implausible_size_after_one_read() {
+        let mock = Mock::new().reply(op::CFG_READ, sized(VARIABLE_MAX + 1));
+        let err = dcmd_variable(&mock, op::CFG_READ, &Mbox::new()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "firmware command 0x04010000 reported an implausible size of {} bytes",
+                VARIABLE_MAX + 1
+            )
+        );
+        assert_eq!(mock.calls().len(), 1);
+        let mock = Mock::new().reply(op::CFG_READ, sized(u32::MAX as usize));
+        assert!(dcmd_variable(&mock, op::CFG_READ, &Mbox::new()).is_err());
+        assert_eq!(mock.calls().len(), 1);
+    }
+
+    #[test]
+    fn variable_reads_accept_the_largest_size() {
+        let mock = Mock::new().reply(op::CFG_READ, sized(VARIABLE_MAX));
+        let data = dcmd_variable(&mock, op::CFG_READ, &Mbox::new()).unwrap();
+        assert_eq!(data.len(), VARIABLE_MAX);
+        let calls = mock.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].bufs[0].len(), VARIABLE_MAX);
+    }
+
+    #[test]
+    fn variable_reads_stop_at_the_first_read_when_it_fits() {
+        for size in [0, 16, VARIABLE_FIRST_READ] {
+            let mock = Mock::new().reply(op::CFG_READ, sized(size));
+            let data = dcmd_variable(&mock, op::CFG_READ, &Mbox::new()).unwrap();
+            assert_eq!(data.len(), VARIABLE_FIRST_READ, "size {size}");
+            assert_eq!(mock.calls().len(), 1, "size {size}");
+        }
+    }
+
+    #[test]
+    fn variable_reads_pass_a_failed_first_read_through() {
+        let mock = Mock::new().status(op::CFG_READ, 0x0c);
+        let err = dcmd_variable(&mock, op::CFG_READ, &Mbox::new()).unwrap_err();
+        assert_eq!(status_of(&err), Some(0x0c));
+        assert_eq!(mock.calls().len(), 1);
+    }
 }

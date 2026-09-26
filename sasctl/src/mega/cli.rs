@@ -1088,4 +1088,145 @@ mod tests {
         assert!(fails(&["controller", "time", "set"]));
         assert!(fails(&["event", "clear"]));
     }
+
+    fn reading_mock() -> Mock {
+        use crate::mega::config::tests::config_bytes;
+        use crate::mega::ld::tests::{ld_info_bytes, ld_list_bytes, ld_props_bytes};
+        busy_mock()
+            .reply(op::CTRL_GET_PROPS, vec![])
+            .reply(op::TIME_SECS_GET, 100u32.to_le_bytes().to_vec())
+            .reply(op::LD_GET_LIST, ld_list_bytes(&[(0, 3, 1000)]))
+            .reply(
+                op::LD_GET_INFO,
+                ld_info_bytes(0, crate::mega::ld::DDF_RAID1, 2, &[(1000, 0)]),
+            )
+            .reply(op::LD_GET_PROPERTIES, ld_props_bytes(0, 1, "data", 0x65))
+            .reply(op::CFG_READ, config_bytes(&[], &[], &[]))
+            .reply(op::CFG_FOREIGN_SCAN, vec![])
+            .reply(op::PR_GET_STATUS, vec![])
+            .reply(op::PR_GET_PROPERTIES, vec![])
+            .reply(op::EVENT_GET_INFO, vec![])
+            .reply(op::EVENT_GET, vec![])
+            .reply(op::SPEAKER_GET, vec![])
+    }
+
+    #[test]
+    fn every_read_renders_json_and_text() {
+        let reads: &[&[&str]] = &[
+            &["controller"],
+            &["controller", "settings"],
+            &["controller", "time"],
+            &["temperature"],
+            &["drive"],
+            &["drive", "252:0"],
+            &["drive", "252:0", "smart"],
+            &["drive", "252:0", "temperature"],
+            &["drive", "252:0", "rebuild"],
+            &["drive", "252:0", "erase"],
+            &["volume"],
+            &["volume", "0"],
+            &["volume", "0", "settings"],
+            &["volume", "0", "progress"],
+            &["config"],
+            &["foreign"],
+            &["foreign", "preview"],
+            &["battery"],
+            &["patrol"],
+            &["alarm"],
+            &["event"],
+            &["event", "info"],
+            &["enclosure"],
+            &["firmware"],
+        ];
+        for argv in reads {
+            let mock = reading_mock();
+            let out = execute(&parse(argv), &one(), &mock, &ctx(false))
+                .unwrap_or_else(|e| panic!("{argv:?}: {e:#}"));
+            let json = out
+                .json()
+                .unwrap_or_else(|e| panic!("{argv:?} json: {e:#}"));
+            assert!(json.is_object(), "{argv:?} gave {json}");
+            assert!(!out.text().trim().is_empty(), "{argv:?} rendered nothing");
+            assert!(
+                !mock.opcodes().iter().any(|o| [
+                    op::CTRL_SET_PROPS,
+                    op::PD_STATE_SET,
+                    op::LD_SET_PROP,
+                    op::CFG_ADD,
+                    op::CFG_CLEAR,
+                    op::PR_START,
+                    op::PR_STOP,
+                    op::BBU_START_LEARN
+                ]
+                .contains(o)),
+                "{argv:?} sent a write"
+            );
+            assert_eq!(mock.resets(), 0, "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn temperature_json_matches_the_go_fixture() {
+        use crate::tests::{assert_matches_fixture, enveloped, go_fixture};
+        let mock = reading_mock();
+        let real = enveloped(
+            1,
+            DRIVER,
+            execute(&parse(&["temperature"]), &one(), &mock, &ctx(false)),
+        );
+        assert!(real[0]["error"].is_null(), "{real}");
+        assert_matches_fixture(
+            &real,
+            &go_fixture("sasctl_1_temperature.json"),
+            "sasctl_1_temperature.json",
+        );
+        assert_eq!(real[0]["controller"], 1);
+        assert_eq!(real[0]["drives"][0]["celsius"], 30);
+    }
+
+    #[test]
+    fn commands_megaraid_lacks_are_refused_by_name() {
+        let mock = reading_mock();
+        for argv in [
+            &["phy"][..],
+            &["boot"],
+            &["log"],
+            &["event", "enable"],
+            &["volume", "0", "check"],
+            &["firmware", "save", "out.bin"],
+        ] {
+            let err = execute(&parse(argv), &one(), &mock, &ctx(true)).unwrap_err();
+            assert!(err.to_string().contains("megaraid_sas"), "{argv:?}: {err}");
+        }
+        assert!(!supports(&parse(&["phy"])));
+        assert!(!supports(&parse(&["volume", "0", "check"])));
+        assert!(!supports(&parse(&["controller", "reset", "--snapdump"])));
+        assert!(supports(&parse(&["controller", "reset"])));
+    }
+
+    #[test]
+    fn volume_ids_above_255_are_refused_before_any_command() {
+        let mock = reading_mock();
+        let err = execute(&parse(&["volume", "256"]), &one(), &mock, &ctx(false)).unwrap_err();
+        assert_eq!(err.to_string(), "volume 256 is out of range");
+        assert!(mock.calls().is_empty());
+    }
+
+    #[test]
+    fn event_since_takes_names_and_numbers() {
+        let info = event::LogInfo::parse(&{
+            let mut b = vec![0u8; 20];
+            for (i, v) in [900u32, 1, 5, 700, 710].iter().enumerate() {
+                b[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+            }
+            b
+        });
+        assert_eq!(event_start(&info, "boot").unwrap(), 710);
+        assert_eq!(event_start(&info, "SHUTDOWN").unwrap(), 700);
+        assert_eq!(event_start(&info, "clear").unwrap(), 5);
+        assert_eq!(event_start(&info, "oldest").unwrap(), 1);
+        assert_eq!(event_start(&info, "newest").unwrap(), 900);
+        assert_eq!(event_start(&info, "42").unwrap(), 42);
+        assert!(event_start(&info, "yesterday").is_err());
+    }
 }

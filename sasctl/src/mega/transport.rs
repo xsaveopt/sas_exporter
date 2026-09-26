@@ -185,4 +185,74 @@ mod tests {
         assert_eq!(char_major(text), Some(244));
         assert_eq!(char_major("Character devices:\n  1 mem\n"), None);
     }
+
+    fn null_transport(host: u16) -> LinuxTransport {
+        LinuxTransport {
+            dev: Device::open(Path::new("/dev/null")).unwrap(),
+            host,
+        }
+    }
+
+    #[test]
+    fn firmware_refuses_too_many_buffers_before_the_ioctl() {
+        let t = null_transport(7);
+        let mut frame = [0u8; FRAME_LEN];
+        let mut storage = vec![vec![0u8; 4]; MAX_SGE + 1];
+        let mut bufs: Vec<&mut [u8]> = storage.iter_mut().map(|b| b.as_mut_slice()).collect();
+        let err = t.firmware(&mut frame, 0x28, &mut bufs, None).unwrap_err();
+        assert_eq!(err.to_string(), "at most 16 buffers per frame");
+        assert_eq!(frame, [0u8; FRAME_LEN]);
+    }
+
+    #[test]
+    fn firmware_refuses_a_sense_pointer_outside_the_frame() {
+        let t = null_transport(7);
+        let mut frame = [0u8; FRAME_LEN];
+        let mut sense = [0u8; 32];
+        let err = t
+            .firmware(&mut frame, 0x28, &mut [], Some((57, &mut sense[..])))
+            .unwrap_err();
+        assert_eq!(err.to_string(), "sense offset 57 beyond the frame");
+    }
+
+    #[test]
+    fn firmware_reports_the_host_when_the_ioctl_fails() {
+        let t = null_transport(7);
+        assert_eq!(t.host_no(), 7);
+        let mut frame = [0u8; FRAME_LEN];
+        frame[STATUS_OFFSET] = 0xff;
+        let mut data = [0u8; 8];
+        let mut bufs: [&mut [u8]; 1] = [&mut data];
+        let mut sense = [0u8; 32];
+        let err = t
+            .firmware(&mut frame, 0x28, &mut bufs, Some((56, &mut sense[..])))
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").starts_with("megaraid firmware ioctl on host 7"),
+            "{err:#}"
+        );
+        assert_eq!(frame[STATUS_OFFSET], 0xff);
+        assert_eq!(&frame[56..64], &[0u8; 8]);
+    }
+
+    #[test]
+    fn reset_host_goes_through_the_scsi_generic_node() {
+        let t = null_transport(4);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-mega-transport-reset");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("class/scsi_generic")).unwrap();
+        let err = t.reset_host(&root).unwrap_err();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(err.to_string().contains("host 4"), "{err}");
+    }
+
+    #[test]
+    fn char_major_ignores_malformed_and_other_lines() {
+        let text =
+            "Character devices:\n\n  x\nabc megaraid_sas_ioctl\n 10 megaraid_sas_ioctl_other\n";
+        assert_eq!(char_major(text), None);
+        let text =
+            "Block devices:\n  9 megaraid_sas_ioctl\nCharacter devices:\n 12 megaraid_sas_ioctl\n";
+        assert_eq!(char_major(text), Some(12));
+    }
 }
