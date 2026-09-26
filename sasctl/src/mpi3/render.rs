@@ -1,36 +1,12 @@
-use anyhow::Result;
-use serde::Serialize;
-
 use super::event::EventLog;
 use super::inventory::{
-    AdapterList, ControllerInfo, ControllerTemperature, Drive, DriveList, DriveSmart,
-    EnclosureList, FirmwareInfo, PhyErrorList, PhyList, Volume, VolumeList,
+    ControllerInfo, ControllerTemperature, Drive, DriveList, DriveSmart, EnclosureList,
+    FirmwareInfo, PhyErrorList, PhyList, Volume, VolumeList,
 };
 use super::pages::Sensor;
-use crate::output::{self, Fields, Format, Render, Table};
+use crate::output::{Fields, Render, Table};
 
-pub trait Emit {
-    fn emit_to(&self, format: Format) -> Result<()>;
-    fn text(&self) -> String;
-}
-
-impl<T: Serialize + Render> Emit for T {
-    fn emit_to(&self, format: Format) -> Result<()> {
-        match format {
-            Format::Text => {
-                print!("{}", self.text());
-                Ok(())
-            }
-            Format::Json => output::emit(format, self),
-        }
-    }
-
-    fn text(&self) -> String {
-        let mut out = String::new();
-        self.render(&mut out);
-        out
-    }
-}
+pub use crate::output::Emit;
 
 fn opt<T: ToString>(v: &Option<T>) -> String {
     v.as_ref()
@@ -52,38 +28,6 @@ fn yes_no(v: bool) -> &'static str {
 
 fn handle(h: u16) -> String {
     format!("0x{h:04x}")
-}
-
-impl Render for AdapterList {
-    fn render(&self, out: &mut String) {
-        let mut t = Table::new([
-            "ID",
-            "Chip",
-            "Device",
-            "SubVendor",
-            "SubDevice",
-            "PCI",
-            "Host",
-            "State",
-            "Personality",
-            "Firmware",
-        ]);
-        for a in &self.adapters {
-            t.row([
-                a.index.to_string(),
-                a.chip.clone(),
-                format!("{:04x}", a.device_id),
-                format!("{:04x}", a.subsystem_vendor_id),
-                format!("{:04x}", a.subsystem_device_id),
-                a.pci_address.clone(),
-                format!("host{}", a.host),
-                a.state.to_string(),
-                opt(&a.personality),
-                opt(&a.firmware_version),
-            ]);
-        }
-        render_table(&t, "No mpi3mr controllers found", out);
-    }
 }
 
 fn sensor_table(sensors: &[Sensor], out: &mut String) {

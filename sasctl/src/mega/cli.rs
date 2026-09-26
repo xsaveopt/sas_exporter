@@ -1,451 +1,34 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Args as ClapArgs, Subcommand, ValueEnum};
 
 use crate::Ctx;
+use crate::cli::{
+    AlarmAction, BatteryAction, Command, ConfigAction, ControllerAction, DriveAction, DriveId,
+    EventAction, EventFilter, FirmwareAction, ForeignAction, Operation, PatrolAction, PatrolMode,
+    Switch, VolumeAction, VolumeId, VolumeInit,
+};
 use crate::mega::bbu;
 use crate::mega::config::{
     self, INIT_FULL, INIT_NONE, INIT_QUICK, RaidLevel, SPARE_ENCL_AFFINITY, SPARE_REVERTIBLE,
     VolumeRequest, parse_stripe,
 };
-use crate::mega::ctrl::{self, AlarmAction, CtrlSetting};
+use crate::mega::ctrl::{self, AlarmAction as CtrlAlarm, CtrlSetting};
 use crate::mega::event::{self, EventQuery, parse_class, parse_locale};
 use crate::mega::fw::{self, FirmwareInfo};
-use crate::mega::ld::{self, LD_SETTABLE, LdSetting};
+use crate::mega::ld::{self, LdSetting};
 use crate::mega::patrol::{self, Mode, Schedule, parse_interval};
 use crate::mega::pd::{self, DriveAddress, STATE_HOT_SPARE};
 use crate::mega::report::{
-    self, ClearProgress, ControllerEntry, ControllerList, ControllerSummary, RebuildProgress,
-    TemperatureReport,
+    self, ClearProgress, ControllerSummary, RebuildProgress, TemperatureReport, Temperatures,
 };
 use crate::mega::reset;
 use crate::mega::transport::Transport;
-use crate::output::{Done, emit};
+use crate::output::{Done, Emit};
 use crate::sysfs::{parse_pci_address, scsi_hosts};
 
 pub const DRIVER: &str = "megaraid_sas";
-
-#[derive(ClapArgs)]
-pub struct Args {
-    #[arg(
-        short = 'c',
-        long = "controller",
-        global = true,
-        help = "Controller index from `mega list`"
-    )]
-    pub controller: Option<usize>,
-    #[command(subcommand)]
-    pub command: Command,
-}
-
-#[derive(Subcommand)]
-pub enum Command {
-    #[command(about = "List controllers in PCI order")]
-    List,
-    #[command(about = "Controller information, properties and actions")]
-    Controller {
-        #[command(subcommand)]
-        cmd: ControllerCmd,
-    },
-    #[command(about = "Controller temperatures")]
-    Temperature {
-        #[command(subcommand)]
-        cmd: ShowCmd,
-    },
-    #[command(about = "Physical drives, addressed as enclosure:slot")]
-    Drive {
-        #[command(subcommand)]
-        cmd: DriveCmd,
-    },
-    #[command(about = "Virtual drives")]
-    Volume {
-        #[command(subcommand)]
-        cmd: VolumeCmd,
-    },
-    #[command(about = "RAID configuration")]
-    Config {
-        #[command(subcommand)]
-        cmd: ConfigCmd,
-    },
-    #[command(about = "Foreign configurations")]
-    Foreign {
-        #[command(subcommand)]
-        cmd: ForeignCmd,
-    },
-    #[command(about = "Battery backup unit")]
-    Bbu {
-        #[command(subcommand)]
-        cmd: BbuCmd,
-    },
-    #[command(about = "CacheVault module")]
-    Cachevault {
-        #[command(subcommand)]
-        cmd: ShowCmd,
-    },
-    #[command(about = "Patrol read")]
-    Patrol {
-        #[command(subcommand)]
-        cmd: PatrolCmd,
-    },
-    #[command(about = "Controller event log")]
-    Event {
-        #[command(subcommand)]
-        cmd: EventCmd,
-    },
-    #[command(about = "Enclosures seen in the drive list")]
-    Enclosure {
-        #[command(subcommand)]
-        cmd: EnclosureCmd,
-    },
-    #[command(about = "Controller firmware")]
-    Firmware {
-        #[command(subcommand)]
-        cmd: FirmwareCmd,
-    },
-    #[command(about = "Controller alarm")]
-    Alarm {
-        #[command(subcommand)]
-        cmd: AlarmCmd,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum ShowCmd {
-    #[command(about = "Show")]
-    Show,
-}
-
-#[derive(Subcommand)]
-pub enum ControllerCmd {
-    #[command(about = "Show controller information")]
-    Show,
-    #[command(about = "Show controller properties")]
-    Props,
-    #[command(about = "Change a controller property")]
-    Set {
-        #[arg(value_parser = clap::builder::PossibleValuesParser::new(ctrl::settable()))]
-        prop: String,
-        value: String,
-    },
-    #[command(about = "Show the controller clock")]
-    Time,
-    #[command(about = "Reset the controller through the Linux driver's online controller reset")]
-    Reset,
-    #[command(about = "Shut the controller down")]
-    Shutdown {
-        #[arg(long, help = "Spin drives down as well")]
-        spindown: bool,
-    },
-    #[command(about = "Flush the controller cache")]
-    Flush {
-        #[arg(long, help = "Flush drive caches as well")]
-        disks: bool,
-    },
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-pub enum DriveState {
-    Good,
-    Offline,
-    Online,
-    Jbod,
-}
-
-impl DriveState {
-    fn code(self) -> u16 {
-        match self {
-            DriveState::Good => pd::STATE_UNCONFIGURED_GOOD,
-            DriveState::Offline => pd::STATE_OFFLINE,
-            DriveState::Online => pd::STATE_ONLINE,
-            DriveState::Jbod => pd::STATE_SYSTEM,
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            DriveState::Good => "unconfigured good",
-            DriveState::Offline => "offline",
-            DriveState::Online => "online",
-            DriveState::Jbod => "JBOD",
-        }
-    }
-}
-
-#[derive(Subcommand)]
-pub enum DriveCmd {
-    #[command(about = "List drives")]
-    List,
-    #[command(about = "Show one drive")]
-    Show { drive: DriveAddress },
-    #[command(about = "Blink the drive's locate LED")]
-    Locate {
-        drive: DriveAddress,
-        #[arg(long, conflicts_with = "off", required_unless_present = "off")]
-        on: bool,
-        #[arg(long)]
-        off: bool,
-    },
-    #[command(about = "Change the drive state")]
-    State {
-        drive: DriveAddress,
-        state: DriveState,
-    },
-    #[command(about = "Drive rebuild")]
-    Rebuild {
-        #[command(subcommand)]
-        cmd: RebuildCmd,
-    },
-    #[command(about = "Hot spares")]
-    Hotspare {
-        #[command(subcommand)]
-        cmd: HotspareCmd,
-    },
-    #[command(about = "Clear a drive by overwriting it")]
-    Clear {
-        #[command(subcommand)]
-        cmd: ClearCmd,
-    },
-    #[command(about = "Error counters and the drive's own failure prediction")]
-    Smart { drive: DriveAddress },
-    #[command(about = "Drive temperatures")]
-    Temperature { drive: Option<DriveAddress> },
-}
-
-#[derive(Subcommand)]
-pub enum RebuildCmd {
-    #[command(about = "Start a rebuild")]
-    Start { drive: DriveAddress },
-    #[command(about = "Abort a rebuild")]
-    Stop { drive: DriveAddress },
-    #[command(about = "Show rebuild progress")]
-    Progress { drive: DriveAddress },
-}
-
-#[derive(Subcommand)]
-pub enum ClearCmd {
-    #[command(about = "Start clearing a drive")]
-    Start { drive: DriveAddress },
-    #[command(about = "Abort a running clear")]
-    Stop { drive: DriveAddress },
-    #[command(about = "Show clear progress")]
-    Progress { drive: DriveAddress },
-}
-
-#[derive(Subcommand)]
-pub enum HotspareCmd {
-    #[command(about = "Make an unconfigured good drive a hot spare")]
-    Add {
-        drive: DriveAddress,
-        #[arg(long, help = "Dedicate the spare to this virtual drive")]
-        volume: Option<u8>,
-        #[arg(long, help = "Mark the spare revertible")]
-        revertible: bool,
-        #[arg(long, help = "Mark the spare with enclosure affinity")]
-        affinity: bool,
-    },
-    #[command(about = "Remove a hot spare")]
-    Remove { drive: DriveAddress },
-}
-
-#[derive(Subcommand)]
-pub enum ProgressCmd {
-    #[command(about = "Show progress")]
-    Progress { vd: u8 },
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-pub enum VolumeInit {
-    None,
-    Fast,
-    Full,
-}
-
-impl VolumeInit {
-    fn code(self) -> u8 {
-        match self {
-            VolumeInit::None => INIT_NONE,
-            VolumeInit::Fast => INIT_QUICK,
-            VolumeInit::Full => INIT_FULL,
-        }
-    }
-}
-
-#[derive(Subcommand)]
-pub enum VolumeCmd {
-    #[command(about = "List virtual drives")]
-    List,
-    #[command(about = "Show one virtual drive")]
-    Show { vd: u8 },
-    #[command(about = "Create a RAID 0, 1, 5, 6, 10, 50 or 60 virtual drive")]
-    Create {
-        #[arg(long, help = "RAID level: 0, 1, 5, 6, 10, 50 or 60")]
-        raid: String,
-        #[arg(
-            long,
-            value_delimiter = ',',
-            required = true,
-            help = "Drives as e:s,e:s,..."
-        )]
-        drives: Vec<DriveAddress>,
-        #[arg(long, default_value = "64k", help = "Strip size, a power of two")]
-        stripe: String,
-        #[arg(long, help = "Volume name, up to 15 characters")]
-        name: Option<String>,
-        #[arg(long, help = "Drives per array for RAID 10, 50 and 60")]
-        pd_per_array: Option<usize>,
-        #[arg(
-            long,
-            value_enum,
-            default_value = "none",
-            help = "Initialize at creation"
-        )]
-        init: VolumeInit,
-    },
-    #[command(about = "Delete a virtual drive")]
-    Delete { vd: u8 },
-    #[command(about = "Show virtual drive properties")]
-    Props { vd: u8 },
-    #[command(about = "Change a virtual drive property")]
-    Set {
-        vd: u8,
-        #[arg(value_parser = clap::builder::PossibleValuesParser::new(LD_SETTABLE))]
-        prop: String,
-        value: String,
-    },
-    #[command(about = "Initialization")]
-    Init {
-        #[command(subcommand)]
-        cmd: ProgressCmd,
-    },
-    #[command(about = "Consistency check")]
-    Check {
-        #[command(subcommand)]
-        cmd: ProgressCmd,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum ConfigCmd {
-    #[command(about = "Show arrays, virtual drives and spares")]
-    Show,
-    #[command(about = "Delete every array and virtual drive")]
-    Clear,
-    #[command(about = "Save the raw configuration data to a file")]
-    Save { file: PathBuf },
-}
-
-#[derive(Subcommand)]
-pub enum ForeignCmd {
-    #[command(about = "Scan for foreign configurations")]
-    Scan,
-    #[command(about = "Show what an import would produce")]
-    Preview {
-        #[arg(long)]
-        index: Option<u8>,
-    },
-    #[command(about = "Import every foreign configuration, or one by index")]
-    Import {
-        #[arg(long)]
-        index: Option<u8>,
-    },
-    #[command(about = "Discard every foreign configuration")]
-    Clear,
-}
-
-#[derive(Subcommand)]
-pub enum BbuCmd {
-    #[command(about = "Show battery status")]
-    Show,
-    #[command(about = "Start a learn cycle")]
-    Learn,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-pub enum PatrolMode {
-    Auto,
-    Manual,
-    Off,
-}
-
-#[derive(Subcommand)]
-pub enum PatrolCmd {
-    #[command(about = "Show patrol read status and schedule")]
-    Show,
-    #[command(about = "Start patrol read")]
-    Start,
-    #[command(about = "Stop patrol read")]
-    Stop,
-    #[command(about = "Change patrol read mode and schedule")]
-    Set {
-        #[arg(long)]
-        mode: PatrolMode,
-        #[arg(long, help = "Seconds between runs, or continuous (auto mode)")]
-        interval: Option<String>,
-        #[arg(long, help = "Seconds from now until the next run (auto mode)")]
-        start_in: Option<u32>,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum EventCmd {
-    #[command(about = "Show event log sequence numbers")]
-    Info,
-    #[command(about = "List events")]
-    List {
-        #[arg(
-            long,
-            default_value = "info",
-            help = "Lowest class: debug, progress, info, warning, critical, fatal, dead"
-        )]
-        class: String,
-        #[arg(
-            long,
-            default_value = "all",
-            help = "Locales: ld, pd, enclosure, bbu, sas, controller, config, cluster, all"
-        )]
-        locale: String,
-        #[arg(
-            long,
-            default_value = "boot",
-            help = "Start at boot, shutdown, clear, oldest, newest or a sequence number"
-        )]
-        since: String,
-        #[arg(
-            long,
-            default_value_t = 100,
-            help = "Show at most this many of the newest matching events"
-        )]
-        count: usize,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum EnclosureCmd {
-    #[command(about = "List enclosures")]
-    List,
-}
-
-#[derive(Subcommand)]
-pub enum FirmwareCmd {
-    #[command(about = "Show firmware versions")]
-    Show,
-    #[command(about = "Flash a firmware image")]
-    Flash { file: PathBuf },
-}
-
-#[derive(Subcommand)]
-pub enum AlarmCmd {
-    #[command(about = "Show alarm state")]
-    Show,
-    #[command(about = "Enable the alarm")]
-    On,
-    #[command(about = "Disable the alarm")]
-    Off,
-    #[command(about = "Silence a sounding alarm")]
-    Silence,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ControllerRef {
@@ -471,67 +54,6 @@ pub fn controllers(sysfs: &Path) -> Vec<ControllerRef> {
         .collect()
 }
 
-pub fn select(ctrls: &[ControllerRef], index: Option<usize>) -> Result<&ControllerRef> {
-    match index {
-        Some(i) => ctrls
-            .get(i)
-            .ok_or_else(|| anyhow!("controller {i} does not exist, {} found", ctrls.len())),
-        None => match ctrls.len() {
-            0 => bail!("no MegaRAID controllers found"),
-            1 => Ok(&ctrls[0]),
-            n => bail!("{n} controllers found, pick one with -c"),
-        },
-    }
-}
-
-pub type Opener<'a> = &'a dyn Fn(u32) -> Result<Box<dyn Transport>>;
-
-pub fn list(ctrls: &[ControllerRef], open: Opener<'_>) -> ControllerList {
-    let controllers = ctrls
-        .iter()
-        .map(|c| {
-            let info = open(c.host_no).and_then(|t| ctrl::get_info(t.as_ref()));
-            let mut e = ControllerEntry {
-                index: c.index,
-                host_no: c.host_no,
-                pci_address: c.pci_address.clone(),
-                product_name: None,
-                serial_number: None,
-                package_version: None,
-                firmware_version: None,
-                volumes: None,
-                drives: None,
-                roc_celsius: None,
-                error: None,
-            };
-            match info {
-                Ok(i) => {
-                    e.firmware_version = Some(i.firmware_version());
-                    e.product_name = Some(i.product_name);
-                    e.serial_number = Some(i.serial_number);
-                    e.package_version = Some(i.package_version);
-                    e.volumes = Some(i.ld_present);
-                    e.drives = Some(i.pd_disk_present);
-                    e.roc_celsius = i.temperatures.roc_celsius;
-                }
-                Err(err) => e.error = Some(format!("{err:#}")),
-            }
-            e
-        })
-        .collect();
-    ControllerList { controllers }
-}
-
-pub fn run(args: Args, ctx: &Ctx, open: Opener<'_>) -> Result<()> {
-    let ctrls = controllers(&ctx.sysfs);
-    if let Command::List = args.command {
-        return emit(ctx.format, &list(&ctrls, open));
-    }
-    let c = select(&ctrls, args.controller)?;
-    let t = open(c.host_no)?;
-    execute(args.command, c, t.as_ref(), ctx)
-}
-
 fn host_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -539,8 +61,16 @@ fn host_now() -> i64 {
         .unwrap_or(0)
 }
 
-fn done(ctx: &Ctx, message: String) -> Result<()> {
-    emit(ctx.format, &Done::ok(message))
+fn done(message: String) -> Result<Box<dyn Emit>> {
+    Ok(Box::new(Done::ok(message)))
+}
+
+fn boxed<T: Emit + 'static>(value: T) -> Result<Box<dyn Emit>> {
+    Ok(Box::new(value))
+}
+
+fn unsupported() -> Result<Box<dyn Emit>> {
+    Err(anyhow!("this is not available on megaraid_sas controllers"))
 }
 
 fn event_start(info: &event::LogInfo, since: &str) -> Result<u32> {
@@ -565,144 +95,196 @@ fn refuse_extended_config(t: &dyn Transport) -> Result<()> {
     Ok(())
 }
 
-pub fn execute(command: Command, c: &ControllerRef, t: &dyn Transport, ctx: &Ctx) -> Result<()> {
-    let f = ctx.format;
+fn drive_address(id: &Option<DriveId>) -> Result<DriveAddress> {
+    id.as_ref()
+        .context("pass a drive as enclosure:slot")?
+        .parse()
+}
+
+fn volume_id(id: &Option<VolumeId>) -> Result<u8> {
+    id.context("pass a volume ID")?.narrow()
+}
+
+fn init_code(init: VolumeInit) -> u8 {
+    match init {
+        VolumeInit::None => INIT_NONE,
+        VolumeInit::Fast => INIT_QUICK,
+        VolumeInit::Full => INIT_FULL,
+    }
+}
+
+pub fn supports(command: &Command) -> bool {
     match command {
-        Command::List => unreachable!("list is handled before a controller is opened"),
-        Command::Controller { cmd } => match cmd {
-            ControllerCmd::Show => {
+        Command::Controller { action, .. } => {
+            !matches!(action, Some(ControllerAction::Reset { snapdump: true }))
+        }
+        Command::Drive { action, .. } => match action {
+            Some(DriveAction::Spare { pool, .. }) => pool.is_none(),
+            _ => true,
+        },
+        Command::Volume { action, .. } => match action {
+            Some(VolumeAction::Activate | VolumeAction::Check) => false,
+            Some(VolumeAction::Delete { zero_lba0 }) => !zero_lba0,
+            Some(VolumeAction::Create { size, pool, .. }) => size.is_none() && pool.is_none(),
+            _ => true,
+        },
+        Command::Config { action } => {
+            !matches!(action, Some(ConfigAction::Clear { zero_lba0: true }))
+        }
+        Command::Firmware { action } => match action {
+            None => true,
+            Some(FirmwareAction::Flash { bios, .. }) => !bios,
+            Some(FirmwareAction::Save { .. }) => false,
+        },
+        Command::Enclosure
+        | Command::Temperature
+        | Command::Battery { .. }
+        | Command::Patrol { .. }
+        | Command::Alarm { .. }
+        | Command::Event { .. }
+        | Command::Foreign { .. } => true,
+        Command::Phy { .. } | Command::Boot { .. } | Command::Log { .. } | Command::Diag { .. } => {
+            false
+        }
+    }
+}
+
+pub fn execute(
+    command: &Command,
+    c: &ControllerRef,
+    t: &dyn Transport,
+    ctx: &Ctx,
+) -> Result<Box<dyn Emit>> {
+    let n = c.index;
+    match command {
+        Command::Controller { action, .. } => match action {
+            None => {
                 let info = ctrl::get_info(t)?;
-                let summary = ControllerSummary {
-                    index: c.index,
+                boxed(ControllerSummary {
+                    index: n,
                     host_no: u32::from(t.host_no()),
                     pci_address: c.pci_address.clone(),
                     driver_version: report::driver_version(&ctx.sysfs),
                     controller_time: ctrl::get_time(t).ok().map(event::format_fw_time),
                     info,
-                };
-                emit(f, &summary)
+                })
             }
-            ControllerCmd::Props => emit(f, &ctrl::get_props(t)?),
-            ControllerCmd::Set { prop, value } => {
-                let setting = CtrlSetting::parse(&prop, &value)?;
-                ctx.confirm(&format!(
-                    "setting {prop} to {value} on controller {}",
-                    c.index
-                ))?;
-                if setting.enables_jbod() && !ctrl::get_info(t)?.support_jbod {
-                    bail!("controller {} does not support JBOD", c.index);
+            Some(ControllerAction::Settings) => boxed(ctrl::get_props(t)?),
+            Some(ControllerAction::Set { setting, value }) => {
+                let parsed = CtrlSetting::parse(setting, value)?;
+                ctx.confirm(&format!("setting {setting} to {value} on controller {n}"))?;
+                if parsed.enables_jbod() && !ctrl::get_info(t)?.support_jbod {
+                    bail!("controller {n} does not support JBOD");
                 }
-                emit(f, &ctrl::set_property(t, setting)?)
+                boxed(ctrl::set_property(t, parsed)?)
             }
-            ControllerCmd::Reset => {
+            Some(ControllerAction::Reset { .. }) => {
                 ctx.confirm(&format!(
-                    "resetting controller {} through the driver, which drops outstanding IO",
-                    c.index
+                    "resetting controller {n} through the driver, which drops outstanding IO"
                 ))?;
                 reset::check_allowed(&ctrl::get_props(t)?)?;
                 t.reset_host(&ctx.sysfs)?;
-                done(ctx, format!("controller {} reset", c.index))
+                done(format!("controller {n} reset"))
             }
-            ControllerCmd::Time => emit(f, &report::time_report(ctrl::get_time(t)?, host_now())),
-            ControllerCmd::Shutdown { spindown } => {
-                ctx.confirm(&format!("shutting down controller {}", c.index))?;
-                ctrl::shutdown(t, spindown)?;
-                done(ctx, format!("controller {} shut down", c.index))
+            Some(ControllerAction::Time) => {
+                boxed(report::time_report(ctrl::get_time(t)?, host_now()))
             }
-            ControllerCmd::Flush { disks } => {
-                ctx.confirm(&format!("flushing the cache of controller {}", c.index))?;
-                ctrl::flush_cache(t, disks)?;
-                done(ctx, format!("controller {} cache flushed", c.index))
+            Some(ControllerAction::Shutdown { spindown }) => {
+                ctx.confirm(&format!("shutting down controller {n}"))?;
+                ctrl::shutdown(t, *spindown)?;
+                done(format!("controller {n} shut down"))
+            }
+            Some(ControllerAction::Flush { disks }) => {
+                ctx.confirm(&format!("flushing the cache of controller {n}"))?;
+                ctrl::flush_cache(t, *disks)?;
+                done(format!("controller {n} cache flushed"))
             }
         },
-        Command::Temperature { cmd: ShowCmd::Show } => {
+        Command::Temperature => {
             let info = ctrl::get_info(t)?;
-            emit(
-                f,
-                &TemperatureReport {
-                    controller: c.index,
+            boxed(Temperatures {
+                controller: TemperatureReport {
+                    controller: n,
                     roc_celsius: info.temperatures.roc_celsius,
                     controller_celsius: info.temperatures.controller_celsius,
                 },
-            )
+                drives: report::drive_temperatures(t)?,
+            })
         }
-        Command::Drive { cmd } => drive(cmd, t, ctx),
-        Command::Volume { cmd } => volume(cmd, t, ctx),
-        Command::Config { cmd } => match cmd {
-            ConfigCmd::Show => emit(f, &config::read(t)?),
-            ConfigCmd::Clear => {
-                ctx.confirm(&format!(
-                    "deleting every virtual drive on controller {}",
-                    c.index
-                ))?;
+        Command::Drive { id, action } => drive(id, action.as_ref(), t, ctx),
+        Command::Volume { id, action } => volume(id, action.as_ref(), t, ctx),
+        Command::Config { action } => match action {
+            None => boxed(config::read(t)?),
+            Some(ConfigAction::Clear { .. }) => {
+                ctx.confirm(&format!("deleting every virtual drive on controller {n}"))?;
                 config::clear(t)?;
-                done(ctx, "configuration cleared".into())
+                done("configuration cleared".into())
             }
-            ConfigCmd::Save { file } => {
+            Some(ConfigAction::Save { file }) => {
                 let raw = config::read_raw(t)?;
-                std::fs::write(&file, &raw)
+                std::fs::write(file, &raw)
                     .with_context(|| format!("writing {}", file.display()))?;
-                done(
-                    ctx,
-                    format!(
-                        "saved {} bytes of configuration to {}",
-                        raw.len(),
-                        file.display()
-                    ),
-                )
+                done(format!(
+                    "saved {} bytes of configuration to {}",
+                    raw.len(),
+                    file.display()
+                ))
             }
         },
-        Command::Foreign { cmd } => match cmd {
-            ForeignCmd::Scan => emit(f, &report::foreign_report(t, false, None)?),
-            ForeignCmd::Preview { index } => emit(f, &report::foreign_report(t, true, index)?),
-            ForeignCmd::Import { index: None } => {
+        Command::Foreign { action } => match action {
+            None => boxed(report::foreign_report(t, false, None)?),
+            Some(ForeignAction::Preview { index }) => {
+                boxed(report::foreign_report(t, true, *index)?)
+            }
+            Some(ForeignAction::Import { index: None }) => {
                 ctx.confirm("importing every foreign configuration")?;
                 config::foreign_import_all(t)?;
-                done(ctx, "foreign configurations imported".into())
+                done("foreign configurations imported".into())
             }
-            ForeignCmd::Import { index: Some(i) } => {
+            Some(ForeignAction::Import { index: Some(i) }) => {
                 ctx.confirm(&format!("importing foreign configuration {i}"))?;
-                config::foreign_import(t, i)?;
-                done(ctx, format!("foreign configuration {i} imported"))
+                config::foreign_import(t, *i)?;
+                done(format!("foreign configuration {i} imported"))
             }
-            ForeignCmd::Clear => {
+            Some(ForeignAction::Clear) => {
                 ctx.confirm("discarding every foreign configuration")?;
                 config::foreign_clear(t)?;
-                done(ctx, "foreign configurations cleared".into())
+                done("foreign configurations cleared".into())
             }
         },
-        Command::Bbu { cmd } => match cmd {
-            BbuCmd::Show => {
+        Command::Battery { action } => match action {
+            None => {
                 let present = ctrl::get_info(t).map(|i| i.bbu_present).unwrap_or(false);
-                emit(f, &bbu::report(t, "bbu", present))
+                let probe = bbu::report(t, "bbu", present);
+                let kind = match probe.status.as_ref().map(|s| s.battery_type) {
+                    Some(1 | 2) | None => return boxed(probe),
+                    Some(_) => "cachevault",
+                };
+                boxed(bbu::report(t, kind, present))
             }
-            BbuCmd::Learn => {
+            Some(BatteryAction::Learn) => {
                 ctx.confirm("starting a battery learn cycle")?;
                 bbu::start_learn(t)?;
-                done(ctx, "learn cycle started".into())
+                done("learn cycle started".into())
             }
         },
-        Command::Cachevault { cmd: ShowCmd::Show } => {
-            let present = ctrl::get_info(t).map(|i| i.bbu_present).unwrap_or(false);
-            emit(f, &bbu::report(t, "cachevault", present))
-        }
-        Command::Patrol { cmd } => match cmd {
-            PatrolCmd::Show => emit(f, &patrol::report(t)?),
-            PatrolCmd::Start => {
+        Command::Patrol { action } => match action {
+            None => boxed(patrol::report(t)?),
+            Some(PatrolAction::Start) => {
                 ctx.confirm("starting patrol read")?;
                 patrol::start(t)?;
-                done(ctx, "patrol read started".into())
+                done("patrol read started".into())
             }
-            PatrolCmd::Stop => {
+            Some(PatrolAction::Stop) => {
                 ctx.confirm("stopping patrol read")?;
                 patrol::stop(t)?;
-                done(ctx, "patrol read stopped".into())
+                done("patrol read stopped".into())
             }
-            PatrolCmd::Set {
+            Some(PatrolAction::Set {
                 mode,
                 interval,
                 start_in,
-            } => {
+            }) => {
                 let sched = Schedule {
                     mode: match mode {
                         PatrolMode::Auto => Mode::Auto,
@@ -710,215 +292,239 @@ pub fn execute(command: Command, c: &ControllerRef, t: &dyn Transport, ctx: &Ctx
                         PatrolMode::Off => Mode::Disabled,
                     },
                     interval: interval.as_deref().map(parse_interval).transpose()?,
-                    start_in,
+                    start_in: *start_in,
                 };
                 ctx.confirm("changing the patrol read schedule")?;
-                emit(f, &patrol::configure(t, sched)?)
+                boxed(patrol::configure(t, sched)?)
             }
         },
-        Command::Event { cmd } => match cmd {
-            EventCmd::Info => emit(f, &event::log_info(t)?),
-            EventCmd::List {
-                class,
-                locale,
-                since,
-                count,
-            } => {
-                let class = parse_class(&class)?;
-                let locale = parse_locale(&locale)?;
+        Command::Event {
+            filter:
+                EventFilter {
+                    count,
+                    since,
+                    class,
+                    locale,
+                },
+            action,
+        } => match action {
+            Some(EventAction::Info) => boxed(event::log_info(t)?),
+            Some(EventAction::Enable) => unsupported(),
+            None => {
+                let class = parse_class(class.as_deref().unwrap_or("info"))?;
+                let locale = parse_locale(locale.as_deref().unwrap_or("all"))?;
                 let info = event::log_info(t)?;
                 let q = EventQuery {
-                    start: event_start(&info, &since)?,
+                    start: event_start(&info, since.as_deref().unwrap_or("boot"))?,
                     stop: info.newest_seq,
                     class,
                     locale,
-                    limit: count,
+                    limit: count.unwrap_or(100),
                 };
-                emit(
-                    f,
-                    &report::EventList {
-                        events: event::fetch(t, &q)?,
-                    },
-                )
+                boxed(report::EventList {
+                    events: event::fetch(t, &q)?,
+                })
             }
         },
-        Command::Enclosure {
-            cmd: EnclosureCmd::List,
-        } => emit(f, &report::enclosures(&pd::get_list(t)?)),
-        Command::Firmware { cmd } => match cmd {
-            FirmwareCmd::Show => emit(f, &FirmwareInfo::from_info(&ctrl::get_info(t)?)),
-            FirmwareCmd::Flash { file } => {
+        Command::Enclosure => boxed(report::enclosures(&pd::get_list(t)?)),
+        Command::Firmware { action } => match action {
+            None => boxed(FirmwareInfo::from_info(&ctrl::get_info(t)?)),
+            Some(FirmwareAction::Flash { file, .. }) => {
                 let image =
-                    std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
+                    std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
                 fw::validate(&image)?;
-                ctx.confirm(&format!(
-                    "flashing {} onto controller {}",
-                    file.display(),
-                    c.index
-                ))?;
+                ctx.confirm(&format!("flashing {} onto controller {n}", file.display()))?;
                 fw::flash(t, &image)?;
-                emit(f, &FirmwareInfo::from_info(&ctrl::get_info(t)?))
+                boxed(FirmwareInfo::from_info(&ctrl::get_info(t)?))
             }
+            Some(FirmwareAction::Save { .. }) => unsupported(),
         },
-        Command::Alarm { cmd } => {
-            let action = match cmd {
-                AlarmCmd::Show => return emit(f, &report::alarm_report(t)?),
-                AlarmCmd::On => AlarmAction::Enable,
-                AlarmCmd::Off => AlarmAction::Disable,
-                AlarmCmd::Silence => AlarmAction::Silence,
+        Command::Alarm { action } => {
+            let (verb, a) = match action {
+                None => return boxed(report::alarm_report(t)?),
+                Some(AlarmAction::On) => ("enabling", CtrlAlarm::Enable),
+                Some(AlarmAction::Off) => ("disabling", CtrlAlarm::Disable),
+                Some(AlarmAction::Silence) => ("silencing", CtrlAlarm::Silence),
             };
-            ctx.confirm("changing the controller alarm")?;
-            ctrl::alarm(t, action)?;
-            done(ctx, "alarm updated".into())
+            ctx.confirm(&format!("{verb} the alarm on controller {n}"))?;
+            ctrl::alarm(t, a)?;
+            done("alarm updated".into())
+        }
+        Command::Phy { .. } | Command::Boot { .. } | Command::Log { .. } | Command::Diag { .. } => {
+            unsupported()
         }
     }
 }
 
-fn drive(cmd: DriveCmd, t: &dyn Transport, ctx: &Ctx) -> Result<()> {
-    let f = ctx.format;
-    match cmd {
-        DriveCmd::List => emit(f, &report::drive_list(t)?),
-        DriveCmd::Show { drive } => emit(f, &report::drive_detail(t, drive)?),
-        DriveCmd::Locate { drive, on, off } => {
-            let on = on && !off;
+fn set_state(
+    t: &dyn Transport,
+    ctx: &Ctx,
+    drive: DriveAddress,
+    code: u16,
+    name: &str,
+) -> Result<Box<dyn Emit>> {
+    ctx.confirm(&format!("setting drive {drive} {name}"))?;
+    let a = report::locate_drive(t, drive)?;
+    pd::set_state(t, a.device_id, code)?;
+    done(format!("drive {drive} set {name}"))
+}
+
+fn drive(
+    id: &Option<DriveId>,
+    action: Option<&DriveAction>,
+    t: &dyn Transport,
+    ctx: &Ctx,
+) -> Result<Box<dyn Emit>> {
+    let Some(action) = action else {
+        return match id {
+            None => boxed(report::drive_list(t)?),
+            Some(_) => boxed(report::drive_detail(t, drive_address(id)?)?),
+        };
+    };
+    let drive = drive_address(id)?;
+    match action {
+        DriveAction::Locate { state } => {
+            let on = *state == Switch::On;
             ctx.confirm(&format!(
                 "turning the locate LED of drive {drive} {}",
                 if on { "on" } else { "off" }
             ))?;
             let a = report::locate_drive(t, drive)?;
             pd::locate(t, a.device_id, on)?;
-            done(
-                ctx,
-                format!(
-                    "locate {} for drive {drive}",
-                    if on { "started" } else { "stopped" }
-                ),
-            )
+            done(format!(
+                "locate {} for drive {drive}",
+                if on { "started" } else { "stopped" }
+            ))
         }
-        DriveCmd::State { drive, state } => {
-            ctx.confirm(&format!("setting drive {drive} {}", state.name()))?;
-            let a = report::locate_drive(t, drive)?;
-            pd::set_state(t, a.device_id, state.code())?;
-            done(ctx, format!("drive {drive} set {}", state.name()))
-        }
-        DriveCmd::Rebuild { cmd } => match cmd {
-            RebuildCmd::Start { drive } => {
+        DriveAction::Smart => boxed(report::drive_smart(t, drive)?),
+        DriveAction::Temperature => boxed(report::drive_temperature(t, drive)?),
+        DriveAction::Online => set_state(t, ctx, drive, pd::STATE_ONLINE, "online"),
+        DriveAction::Offline => set_state(t, ctx, drive, pd::STATE_OFFLINE, "offline"),
+        DriveAction::Good => set_state(
+            t,
+            ctx,
+            drive,
+            pd::STATE_UNCONFIGURED_GOOD,
+            "unconfigured good",
+        ),
+        DriveAction::Jbod => set_state(t, ctx, drive, pd::STATE_SYSTEM, "JBOD"),
+        DriveAction::Rebuild { operation } => match operation {
+            None => {
+                let a = report::locate_drive(t, drive)?;
+                let info = pd::get_info(t, a.device_id)?;
+                boxed(RebuildProgress {
+                    address: drive,
+                    state: info.state,
+                    rebuild: info.progress.rebuild,
+                })
+            }
+            Some(Operation::Start) => {
                 ctx.confirm(&format!("starting a rebuild on drive {drive}"))?;
                 let a = report::locate_drive(t, drive)?;
                 pd::rebuild_start(t, a.device_id)?;
-                done(ctx, format!("rebuild started on drive {drive}"))
+                done(format!("rebuild started on drive {drive}"))
             }
-            RebuildCmd::Stop { drive } => {
+            Some(Operation::Stop) => {
                 ctx.confirm(&format!("aborting the rebuild on drive {drive}"))?;
                 let a = report::locate_drive(t, drive)?;
                 pd::rebuild_stop(t, a.device_id)?;
-                done(ctx, format!("rebuild stopped on drive {drive}"))
-            }
-            RebuildCmd::Progress { drive } => {
-                let a = report::locate_drive(t, drive)?;
-                let info = pd::get_info(t, a.device_id)?;
-                emit(
-                    f,
-                    &RebuildProgress {
-                        address: drive,
-                        state: info.state,
-                        rebuild: info.progress.rebuild,
-                    },
-                )
+                done(format!("rebuild stopped on drive {drive}"))
             }
         },
-        DriveCmd::Hotspare { cmd } => match cmd {
-            HotspareCmd::Add {
-                drive,
-                volume,
-                revertible,
-                affinity,
-            } => {
-                let what = match volume {
-                    Some(v) => {
-                        format!("making drive {drive} a dedicated hot spare for virtual drive {v}")
-                    }
-                    None => format!("making drive {drive} a global hot spare"),
-                };
-                ctx.confirm(&what)?;
-                refuse_extended_config(t)?;
+        DriveAction::Erase { operation } => match operation {
+            None => {
                 let a = report::locate_drive(t, drive)?;
                 let info = pd::get_info(t, a.device_id)?;
-                let cfg = config::read(t)?;
-                let mut flags = 0;
-                if revertible {
-                    flags |= SPARE_REVERTIBLE;
-                }
-                if affinity {
-                    flags |= SPARE_ENCL_AFFINITY;
-                }
-                let data = config::build_spare(&cfg, &info, volume, flags)?;
-                config::make_spare(t, &data)?;
-                done(ctx, format!("drive {drive} is now a hot spare"))
+                boxed(ClearProgress {
+                    address: drive,
+                    state: info.state,
+                    clear: info.progress.clear,
+                })
             }
-            HotspareCmd::Remove { drive } => {
-                ctx.confirm(&format!("removing hot spare {drive}"))?;
-                let a = report::locate_drive(t, drive)?;
-                let info = pd::get_info(t, a.device_id)?;
-                if info.fw_state != STATE_HOT_SPARE {
-                    bail!("drive {drive} is {} and not a hot spare", info.state);
-                }
-                config::remove_spare(t, info.device_id, info.seq_num)?;
-                done(ctx, format!("drive {drive} is no longer a hot spare"))
-            }
-        },
-        DriveCmd::Clear { cmd } => match cmd {
-            ClearCmd::Start { drive } => {
+            Some(Operation::Start) => {
                 ctx.confirm(&format!(
-                    "clearing drive {drive}, which erases everything on it"
+                    "erasing drive {drive}, which overwrites everything on it"
                 ))?;
                 let a = report::locate_drive(t, drive)?;
                 pd::clear_start(t, a.device_id)?;
-                done(ctx, format!("clear started on drive {drive}"))
+                done(format!("erase started on drive {drive}"))
             }
-            ClearCmd::Stop { drive } => {
-                ctx.confirm(&format!("aborting the clear on drive {drive}"))?;
+            Some(Operation::Stop) => {
+                ctx.confirm(&format!("aborting the erase on drive {drive}"))?;
                 let a = report::locate_drive(t, drive)?;
                 pd::clear_stop(t, a.device_id)?;
-                done(ctx, format!("clear stopped on drive {drive}"))
-            }
-            ClearCmd::Progress { drive } => {
-                let a = report::locate_drive(t, drive)?;
-                let info = pd::get_info(t, a.device_id)?;
-                emit(
-                    f,
-                    &ClearProgress {
-                        address: drive,
-                        state: info.state,
-                        clear: info.progress.clear,
-                    },
-                )
+                done(format!("erase stopped on drive {drive}"))
             }
         },
-        DriveCmd::Smart { drive } => emit(f, &report::drive_smart(t, drive)?),
-        DriveCmd::Temperature { drive: Some(drive) } => {
-            emit(f, &report::drive_temperature(t, drive)?)
+        DriveAction::Spare {
+            volume,
+            revertible,
+            affinity,
+            ..
+        } => {
+            let what = match volume {
+                Some(v) => {
+                    format!("making drive {drive} a dedicated hot spare for volume {v}")
+                }
+                None => format!("making drive {drive} a global hot spare"),
+            };
+            ctx.confirm(&what)?;
+            refuse_extended_config(t)?;
+            let a = report::locate_drive(t, drive)?;
+            let info = pd::get_info(t, a.device_id)?;
+            let cfg = config::read(t)?;
+            let mut flags = 0;
+            if *revertible {
+                flags |= SPARE_REVERTIBLE;
+            }
+            if *affinity {
+                flags |= SPARE_ENCL_AFFINITY;
+            }
+            let data = config::build_spare(&cfg, &info, *volume, flags)?;
+            config::make_spare(t, &data)?;
+            done(format!("drive {drive} is now a hot spare"))
         }
-        DriveCmd::Temperature { drive: None } => emit(f, &report::drive_temperatures(t)?),
+        DriveAction::Unspare => {
+            ctx.confirm(&format!("removing hot spare {drive}"))?;
+            let a = report::locate_drive(t, drive)?;
+            let info = pd::get_info(t, a.device_id)?;
+            if info.fw_state != STATE_HOT_SPARE {
+                bail!("drive {drive} is {} and not a hot spare", info.state);
+            }
+            config::remove_spare(t, info.device_id, info.seq_num)?;
+            done(format!("drive {drive} is no longer a hot spare"))
+        }
     }
 }
 
-fn volume(cmd: VolumeCmd, t: &dyn Transport, ctx: &Ctx) -> Result<()> {
-    let f = ctx.format;
-    match cmd {
-        VolumeCmd::List => emit(f, &report::volume_list(t)?),
-        VolumeCmd::Show { vd } => emit(f, &report::volume_detail(t, vd)?),
-        VolumeCmd::Create {
-            raid,
+fn volume(
+    id: &Option<VolumeId>,
+    action: Option<&VolumeAction>,
+    t: &dyn Transport,
+    ctx: &Ctx,
+) -> Result<Box<dyn Emit>> {
+    match action {
+        None => match id {
+            None => boxed(report::volume_list(t)?),
+            Some(_) => boxed(report::volume_detail(t, volume_id(id)?)?),
+        },
+        Some(VolumeAction::Create {
+            level,
             drives,
-            stripe,
             name,
-            pd_per_array,
+            stripe,
+            span,
             init,
-        } => {
-            let level = RaidLevel::parse(&raid)?;
-            let stripe_bytes = parse_stripe(&stripe)?;
-            let list: Vec<String> = drives.iter().map(DriveAddress::to_string).collect();
+            ..
+        }) => {
+            let raid = level.to_ascii_lowercase();
+            let level = RaidLevel::parse(raid.strip_prefix("raid").unwrap_or(&raid))?;
+            let stripe_bytes = parse_stripe(stripe.as_deref().unwrap_or("64k"))?;
+            let members = drives
+                .iter()
+                .map(|d| d.parse())
+                .collect::<Result<Vec<DriveAddress>>>()?;
+            let list: Vec<String> = members.iter().map(DriveAddress::to_string).collect();
             ctx.confirm(&format!(
                 "creating a {} volume on drives {}",
                 level.name(),
@@ -937,7 +543,7 @@ fn volume(cmd: VolumeCmd, t: &dyn Transport, ctx: &Ctx) -> Result<()> {
                 bail!("controller does not support spanned volumes");
             }
             let pds = pd::get_list(t)?;
-            let infos = drives
+            let infos = members
                 .iter()
                 .map(|d| pd::get_info(t, pd::resolve(&pds, *d)?.device_id))
                 .collect::<Result<Vec<_>>>()?;
@@ -947,33 +553,38 @@ fn volume(cmd: VolumeCmd, t: &dyn Transport, ctx: &Ctx) -> Result<()> {
                 &VolumeRequest {
                     level,
                     drives: &infos,
-                    drives_per_array: pd_per_array,
+                    drives_per_array: *span,
                     stripe_bytes,
                     name: name.as_deref(),
-                    init_state: init.code(),
+                    init_state: init_code(init.unwrap_or(VolumeInit::None)),
                 },
             )?;
             let target = config::new_target_id(&data);
             config::add(t, &data)?;
-            done(ctx, format!("created virtual drive {target}"))
+            done(format!("created volume {target}"))
         }
-        VolumeCmd::Delete { vd } => {
-            ctx.confirm(&format!("deleting virtual drive {vd} and its data"))?;
+        Some(VolumeAction::Delete { .. }) => {
+            let vd = volume_id(id)?;
+            ctx.confirm(&format!("deleting volume {vd} and its data"))?;
             ld::delete(t, vd)?;
-            done(ctx, format!("virtual drive {vd} deleted"))
+            done(format!("volume {vd} deleted"))
         }
-        VolumeCmd::Props { vd } => emit(f, &ld::get_props(t, vd)?),
-        VolumeCmd::Set { vd, prop, value } => {
-            let setting = LdSetting::parse(&prop, &value)?;
-            ctx.confirm(&format!("setting {prop} to {value} on virtual drive {vd}"))?;
-            emit(f, &ld::set_property(t, vd, &setting)?)
+        Some(VolumeAction::Settings) => boxed(ld::get_props(t, volume_id(id)?)?),
+        Some(VolumeAction::Set { setting, value }) => {
+            let vd = volume_id(id)?;
+            let parsed = LdSetting::parse(setting, value)?;
+            ctx.confirm(&format!("setting {setting} to {value} on volume {vd}"))?;
+            boxed(ld::set_property(t, vd, &parsed)?)
         }
-        VolumeCmd::Init {
-            cmd: ProgressCmd::Progress { vd },
-        } => emit(f, &report::volume_init_progress(t, vd)?),
-        VolumeCmd::Check {
-            cmd: ProgressCmd::Progress { vd },
-        } => emit(f, &report::volume_check_progress(t, vd)?),
+        Some(VolumeAction::Progress) => {
+            let vd = volume_id(id)?;
+            let mut progress = report::volume_init_progress(t, vd)?;
+            progress
+                .operations
+                .extend(report::volume_check_progress(t, vd)?.operations);
+            boxed(progress)
+        }
+        Some(VolumeAction::Activate | VolumeAction::Check) => unsupported(),
     }
 }
 
@@ -988,23 +599,16 @@ mod tests {
     use crate::output::Format;
     use clap::Parser;
     use std::fs;
+    use std::path::PathBuf;
 
-    #[derive(Parser)]
-    struct Harness {
-        #[command(flatten)]
-        args: Args,
-    }
-
-    fn parse(argv: &[&str]) -> Args {
-        let mut full = vec!["mega"];
-        full.extend_from_slice(argv);
-        Harness::try_parse_from(full).unwrap().args
-    }
+    use crate::cli::{Cli, VolumeAction, parse};
+    use crate::mega::ctrl::CtrlSetting;
 
     fn ctx(yes: bool) -> Ctx {
         Ctx {
             format: Format::Json,
             yes,
+            interactive: false,
             sysfs: PathBuf::new(),
         }
     }
@@ -1033,22 +637,22 @@ mod tests {
             &["controller", "set", "rebuild-rate", "30"],
             &["controller", "shutdown"],
             &["controller", "flush"],
-            &["drive", "locate", "252:0", "--on"],
-            &["drive", "state", "252:0", "offline"],
-            &["drive", "rebuild", "start", "252:0"],
-            &["drive", "rebuild", "stop", "252:0"],
-            &["drive", "hotspare", "add", "252:0"],
-            &["drive", "hotspare", "remove", "252:0"],
-            &["volume", "create", "--raid", "1", "--drives", "252:0,252:1"],
-            &["volume", "delete", "0"],
-            &["volume", "set", "0", "write-cache", "wb"],
+            &["drive", "252:0", "locate"],
+            &["drive", "252:0", "offline"],
+            &["drive", "252:0", "rebuild", "start"],
+            &["drive", "252:0", "rebuild", "stop"],
+            &["drive", "252:0", "spare"],
+            &["drive", "252:0", "unspare"],
+            &["volume", "create", "1", "252:0", "252:1"],
+            &["volume", "0", "delete"],
+            &["volume", "0", "set", "write-cache", "wb"],
             &["config", "clear"],
             &["foreign", "import"],
             &["foreign", "clear"],
-            &["bbu", "learn"],
+            &["battery", "learn"],
             &["patrol", "start"],
             &["patrol", "stop"],
-            &["patrol", "set", "--mode", "manual"],
+            &["patrol", "set", "manual"],
             &["alarm", "on"],
             &["alarm", "off"],
             &["alarm", "silence"],
@@ -1056,34 +660,19 @@ mod tests {
             &["controller", "set", "jbod", "on"],
             &["controller", "set", "coercion", "1g"],
             &["controller", "reset"],
-            &["drive", "clear", "start", "252:0"],
-            &["drive", "clear", "stop", "252:0"],
+            &["drive", "252:0", "erase", "start"],
+            &["drive", "252:0", "erase", "stop"],
+            &["drive", "252:0", "spare", "--revertible", "--affinity"],
             &[
-                "drive",
-                "hotspare",
-                "add",
-                "252:0",
-                "--revertible",
-                "--affinity",
+                "volume", "create", "10", "252:0", "252:1", "252:2", "252:3", "--span", "2",
+                "--init", "full",
             ],
-            &[
-                "volume",
-                "create",
-                "--raid",
-                "10",
-                "--drives",
-                "252:0,252:1,252:2,252:3",
-                "--pd-per-array",
-                "2",
-                "--init",
-                "full",
-            ],
-            &["volume", "set", "0", "autobgi", "off"],
-            &["foreign", "import", "--index", "1"],
+            &["volume", "0", "set", "autobgi", "off"],
+            &["foreign", "import", "1"],
         ];
         for argv in changing {
             let mock = busy_mock();
-            let err = execute(parse(argv).command, &one(), &mock, &ctx(false)).unwrap_err();
+            let err = execute(&parse(argv), &one(), &mock, &ctx(false)).unwrap_err();
             assert!(err.to_string().contains("--yes"), "{argv:?}: {err}");
             assert!(
                 mock.calls().is_empty(),
@@ -1103,7 +692,7 @@ mod tests {
         fs::write(&good, vec![0u8; 2048]).unwrap();
         let mock = Mock::new();
         let e = execute(
-            parse(&["firmware", "flash", bad.to_str().unwrap()]).command,
+            &parse(&["firmware", "flash", bad.to_str().unwrap()]),
             &one(),
             &mock,
             &ctx(false),
@@ -1111,7 +700,7 @@ mod tests {
         .unwrap_err();
         assert!(e.to_string().contains("multiple of 1024"));
         let e = execute(
-            parse(&["firmware", "flash", good.to_str().unwrap()]).command,
+            &parse(&["firmware", "flash", good.to_str().unwrap()]),
             &one(),
             &mock,
             &ctx(false),
@@ -1126,7 +715,7 @@ mod tests {
     fn confirmed_state_change_reaches_the_controller() {
         let mock = busy_mock().reply(op::PD_STATE_SET, vec![]);
         execute(
-            parse(&["drive", "state", "252:0", "jbod"]).command,
+            &parse(&["drive", "252:0", "jbod"]),
             &one(),
             &mock,
             &ctx(true),
@@ -1146,7 +735,7 @@ mod tests {
         info[2120] = 1;
         let mock = Mock::new().reply(op::CTRL_GET_INFO, info);
         let e = execute(
-            parse(&["volume", "create", "--raid", "0", "--drives", "252:0"]).command,
+            &parse(&["volume", "create", "0", "252:0"]),
             &one(),
             &mock,
             &ctx(true),
@@ -1165,13 +754,7 @@ mod tests {
     #[test]
     fn reset_is_refused_when_online_controller_reset_is_disabled() {
         let mock = Mock::new().reply(op::CTRL_GET_PROPS, props_with(33, 0x04));
-        let e = execute(
-            parse(&["controller", "reset"]).command,
-            &one(),
-            &mock,
-            &ctx(true),
-        )
-        .unwrap_err();
+        let e = execute(&parse(&["controller", "reset"]), &one(), &mock, &ctx(true)).unwrap_err();
         assert!(e.to_string().contains("refused"), "{e}");
         assert_eq!(mock.opcodes(), vec![op::CTRL_GET_PROPS]);
         assert_eq!(mock.resets(), 0);
@@ -1180,13 +763,7 @@ mod tests {
     #[test]
     fn reset_goes_through_the_host_reset_when_allowed() {
         let mock = Mock::new().reply(op::CTRL_GET_PROPS, props_with(33, 0x20));
-        execute(
-            parse(&["controller", "reset"]).command,
-            &one(),
-            &mock,
-            &ctx(true),
-        )
-        .unwrap();
+        execute(&parse(&["controller", "reset"]), &one(), &mock, &ctx(true)).unwrap();
         assert_eq!(mock.resets(), 1);
         assert_eq!(mock.opcodes(), vec![op::CTRL_GET_PROPS]);
     }
@@ -1200,7 +777,7 @@ mod tests {
             .reply(op::CTRL_GET_PROPS, props_with(8, 30))
             .reply(op::CTRL_SET_PROPS, vec![]);
         let e = execute(
-            parse(&["controller", "set", "jbod", "on"]).command,
+            &parse(&["controller", "set", "jbod", "on"]),
             &one(),
             &mock,
             &ctx(true),
@@ -1216,7 +793,7 @@ mod tests {
             .reply(op::CTRL_GET_PROPS, props_with(8, 30))
             .reply(op::CTRL_SET_PROPS, vec![]);
         execute(
-            parse(&["controller", "set", "bgi-rate", "45"]).command,
+            &parse(&["controller", "set", "bgi-rate", "45"]),
             &one(),
             &mock,
             &ctx(true),
@@ -1232,7 +809,7 @@ mod tests {
         assert_eq!(write.bufs[0], want);
         assert_eq!(write.mbox(), &[0u8; 12]);
         let e = execute(
-            parse(&["controller", "set", "bgi-rate", "101"]).command,
+            &parse(&["controller", "set", "bgi-rate", "101"]),
             &one(),
             &Mock::new(),
             &ctx(true),
@@ -1286,19 +863,10 @@ mod tests {
     fn raid10_create_sends_two_arrays_and_a_spanned_ld() {
         let mock = four_ugood_mock(spanning_info());
         execute(
-            parse(&[
-                "volume",
-                "create",
-                "--raid",
-                "10",
-                "--drives",
-                "252:0,252:1,252:2,252:3",
-                "--pd-per-array",
-                "2",
-                "--init",
-                "fast",
-            ])
-            .command,
+            &parse(&[
+                "volume", "create", "10", "252:0", "252:1", "252:2", "252:3", "--span", "2",
+                "--init", "fast",
+            ]),
             &one(),
             &mock,
             &ctx(true),
@@ -1327,17 +895,9 @@ mod tests {
     fn spanned_create_needs_the_spanning_capability() {
         let mock = four_ugood_mock(ctrl_info_bytes("x", "y", 40, 0));
         let e = execute(
-            parse(&[
-                "volume",
-                "create",
-                "--raid",
-                "10",
-                "--drives",
-                "252:0,252:1,252:2,252:3",
-                "--pd-per-array",
-                "2",
-            ])
-            .command,
+            &parse(&[
+                "volume", "create", "10", "252:0", "252:1", "252:2", "252:3", "--span", "2",
+            ]),
             &one(),
             &mock,
             &ctx(true),
@@ -1351,15 +911,7 @@ mod tests {
     fn hotspare_flags_reach_the_spare_record() {
         let mock = four_ugood_mock(spanning_info());
         execute(
-            parse(&[
-                "drive",
-                "hotspare",
-                "add",
-                "252:1",
-                "--revertible",
-                "--affinity",
-            ])
-            .command,
+            &parse(&["drive", "252:1", "spare", "--revertible", "--affinity"]),
             &one(),
             &mock,
             &ctx(true),
@@ -1383,7 +935,7 @@ mod tests {
             .reply(op::CFG_FOREIGN_SCAN, scan)
             .reply(op::CFG_FOREIGN_IMPORT, vec![]);
         execute(
-            parse(&["foreign", "import", "--index", "1"]).command,
+            &parse(&["foreign", "import", "1"]),
             &one(),
             &mock,
             &ctx(true),
@@ -1407,7 +959,7 @@ mod tests {
             .reply(op::PD_GET_INFO, info)
             .reply(op::PD_CLEAR_START, vec![]);
         execute(
-            parse(&["drive", "clear", "start", "252:0"]).command,
+            &parse(&["drive", "252:0", "erase", "start"]),
             &one(),
             &mock,
             &ctx(true),
@@ -1420,7 +972,7 @@ mod tests {
             .unwrap();
         assert_eq!(start.mbox()[..4], [8, 0, 5, 0]);
         execute(
-            parse(&["drive", "clear", "progress", "252:0"]).command,
+            &parse(&["drive", "252:0", "erase"]),
             &one(),
             &mock,
             &ctx(false),
@@ -1469,20 +1021,8 @@ mod tests {
     #[test]
     fn read_commands_run_without_yes() {
         let mock = busy_mock();
-        execute(
-            parse(&["temperature", "show"]).command,
-            &one(),
-            &mock,
-            &ctx(false),
-        )
-        .unwrap();
-        execute(
-            parse(&["enclosure", "list"]).command,
-            &one(),
-            &mock,
-            &ctx(false),
-        )
-        .unwrap();
+        execute(&parse(&["temperature"]), &one(), &mock, &ctx(false)).unwrap();
+        execute(&parse(&["enclosure"]), &one(), &mock, &ctx(false)).unwrap();
     }
 
     fn fake_sysfs(name: &str, hosts: &[(u32, &str)]) -> PathBuf {
@@ -1521,87 +1061,31 @@ mod tests {
         assert_eq!(order, vec![1, 3, 0, 2]);
         assert_eq!(ctrls[0].index, 0);
         assert_eq!(ctrls[0].pci_address.as_deref(), Some("0000:03:00.0"));
-        assert_eq!(select(&ctrls, Some(2)).unwrap().host_no, 0);
-        assert!(select(&ctrls, Some(4)).is_err());
-        assert!(select(&ctrls, None).is_err());
-        assert_eq!(select(&ctrls[..1], None).unwrap().host_no, 1);
-    }
-
-    #[test]
-    fn list_reports_each_controller_and_keeps_going_on_errors() {
-        let ctrls = vec![
-            ControllerRef {
-                index: 0,
-                host_no: 4,
-                pci_address: Some("0000:03:00.0".into()),
-            },
-            ControllerRef {
-                index: 1,
-                host_no: 7,
-                pci_address: None,
-            },
-        ];
-        let open = |host: u32| -> Result<Box<dyn Transport>> {
-            if host == 4 {
-                Ok(Box::new(Mock::new().reply(
-                    op::CTRL_GET_INFO,
-                    ctrl_info_bytes("MegaRAID 9460-8i", "SK1", 52, 61),
-                )))
-            } else {
-                bail!("no such host")
-            }
-        };
-        let l = list(&ctrls, &open);
-        assert_eq!(
-            l.controllers[0].product_name.as_deref(),
-            Some("MegaRAID 9460-8i")
-        );
-        assert_eq!(l.controllers[0].roc_celsius, Some(52));
-        assert_eq!(l.controllers[0].volumes, Some(2));
-        assert!(
-            l.controllers[1]
-                .error
-                .as_deref()
-                .unwrap()
-                .contains("no such host")
-        );
     }
 
     #[test]
     fn drive_addresses_and_volume_drives_parse_on_the_command_line() {
-        let a = parse(&[
-            "-c",
-            "1",
-            "volume",
-            "create",
-            "--raid",
-            "5",
-            "--drives",
-            "252:0,252:1,:4",
-        ]);
-        assert_eq!(a.controller, Some(1));
+        let command = parse(&["-c", "1", "volume", "create", "5", "252:0", "252:1", ":4"]);
         let Command::Volume {
-            cmd: VolumeCmd::Create { drives, stripe, .. },
-        } = a.command
+            action: Some(VolumeAction::Create { drives, stripe, .. }),
+            ..
+        } = command
         else {
             panic!("wrong command");
         };
         assert_eq!(drives.len(), 3);
-        assert_eq!(drives[2].enclosure, pd::NO_ENCLOSURE);
-        assert_eq!(stripe, "64k");
-        assert!(Harness::try_parse_from(["mega", "drive", "locate", "252:0"]).is_err());
-        assert!(
-            Harness::try_parse_from(["mega", "controller", "set", "load-balance-mode", "1"])
-                .is_err()
-        );
-        assert!(Harness::try_parse_from(["mega", "controller", "set", "bgi-rate", "30"]).is_ok());
-        assert!(
-            Harness::try_parse_from([
-                "mega", "volume", "create", "--raid", "0", "--drives", "1:1", "--init", "quick"
-            ])
-            .is_err()
-        );
-        assert!(Harness::try_parse_from(["mega", "controller", "time", "set"]).is_err());
-        assert!(Harness::try_parse_from(["mega", "event", "clear"]).is_err());
+        let last: DriveAddress = drives[2].parse().unwrap();
+        assert_eq!(last.enclosure, pd::NO_ENCLOSURE);
+        assert_eq!(stripe, None);
+        assert!(CtrlSetting::parse("load-balance-mode", "1").is_err());
+        assert!(CtrlSetting::parse("bgi-rate", "30").is_ok());
+        let fails = |argv: &[&str]| {
+            let mut full = vec!["sasctl"];
+            full.extend_from_slice(argv);
+            Cli::try_parse_from(full).is_err()
+        };
+        assert!(fails(&["volume", "create", "0", "1:1", "--init", "quick"]));
+        assert!(fails(&["controller", "time", "set"]));
+        assert!(fails(&["event", "clear"]));
     }
 }

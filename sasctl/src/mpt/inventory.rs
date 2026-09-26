@@ -72,11 +72,6 @@ pub struct AdapterRow {
     pub bios_version: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub struct AdapterList {
-    pub adapters: Vec<AdapterRow>,
-}
-
 fn chip_of(info: &IocInfo, man0: Option<&Manufacturing0>) -> String {
     chip_name(info.pci_id)
         .map(str::to_string)
@@ -102,20 +97,6 @@ pub fn adapter_row(target: &Target, t: &dyn Transport) -> Result<AdapterRow> {
         firmware_version: version_string(info.firmware_version),
         bios_version: bios_version_string(info.bios_version),
     })
-}
-
-pub fn list_adapters(
-    targets: &[Target],
-    opener: impl Fn(&Target) -> Result<Box<dyn Transport>>,
-) -> Result<AdapterList> {
-    let adapters = targets
-        .iter()
-        .map(|target| {
-            let t = opener(target)?;
-            adapter_row(target, t.as_ref())
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(AdapterList { adapters })
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -23,18 +23,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::Ctx;
 use crate::mega::transport::{DEFAULT_NODE, LinuxTransport, Transport, ensure_node};
-
-pub use cli::Args;
 
 pub fn open_host(host_no: u32) -> Result<Box<dyn Transport>> {
     let host =
         u16::try_from(host_no).with_context(|| format!("SCSI host {host_no} is out of range"))?;
     let node = ensure_node(Path::new(DEFAULT_NODE))?;
     Ok(Box::new(LinuxTransport::open(&node, host)?))
-}
-
-pub fn run(args: Args, ctx: &Ctx) -> Result<()> {
-    cli::run(args, ctx, &open_host)
 }

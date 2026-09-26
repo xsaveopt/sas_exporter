@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use serde::Serialize;
 
 use super::transport::{LinuxTransport, Transport, driver_read, driver_write, node_path};
@@ -25,6 +25,7 @@ pub const RESET_DIAG_FAULT: u8 = 2;
 
 #[derive(Clone, Debug)]
 pub struct Target {
+    pub id: usize,
     pub index: u8,
     pub host: ScsiHost,
 }
@@ -35,7 +36,11 @@ pub fn order_targets(hosts: Vec<ScsiHost>) -> Vec<Target> {
         .filter(|h| h.proc_name == PROC_NAME)
         .filter_map(|h| {
             let index = u8::try_from(h.unique_id?).ok()?;
-            Some(Target { index, host: h })
+            Some(Target {
+                id: usize::from(index),
+                index,
+                host: h,
+            })
         })
         .collect();
     found.sort_by_key(|t| (t.index, t.host.host_no));
@@ -47,22 +52,9 @@ pub fn enumerate(sysfs_root: &Path) -> Vec<Target> {
     order_targets(sysfs::scsi_hosts(sysfs_root, &[PROC_NAME]))
 }
 
-pub fn select(targets: Vec<Target>, index: u8) -> Result<Target> {
-    let ids: Vec<String> = targets.iter().map(|t| t.index.to_string()).collect();
-    match targets.into_iter().find(|t| t.index == index) {
-        Some(t) => Ok(t),
-        None if ids.is_empty() => bail!("no mpi3mr controllers found"),
-        None => bail!(
-            "controller {index} does not exist, valid controllers are {}",
-            ids.join(", ")
-        ),
-    }
-}
-
 pub fn open(target: &Target) -> Result<Box<dyn Transport>> {
     let node = node_path(target.index);
-    let t = LinuxTransport::open(&node, target.index)
-        .with_context(|| format!("controller {}", target.index))?;
+    let t = LinuxTransport::open(&node, target.index)?;
     Ok(Box::new(t))
 }
 

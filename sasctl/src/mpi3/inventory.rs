@@ -73,7 +73,7 @@ impl Temperature {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct AdapterRow {
-    pub index: u8,
+    pub index: usize,
     pub host: u32,
     pub chip: String,
     pub device_id: u32,
@@ -86,11 +86,6 @@ pub struct AdapterRow {
     pub personality: Option<&'static str>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub struct AdapterList {
-    pub adapters: Vec<AdapterRow>,
-}
-
 pub fn adapter_row(target: &Target, t: &dyn Transport) -> Result<AdapterRow> {
     let info = adapter::adp_info(t)?;
     let facts = if info.operational() {
@@ -99,7 +94,7 @@ pub fn adapter_row(target: &Target, t: &dyn Transport) -> Result<AdapterRow> {
         None
     };
     Ok(AdapterRow {
-        index: target.index,
+        index: target.id,
         host: target.host.host_no,
         chip: chip_of(info.pci_dev_id, None),
         device_id: info.pci_dev_id,
@@ -111,20 +106,6 @@ pub fn adapter_row(target: &Target, t: &dyn Transport) -> Result<AdapterRow> {
         firmware_version: facts.as_ref().map(|f| f.fw_version.to_string()),
         personality: facts.as_ref().map(IocFacts::personality),
     })
-}
-
-pub fn list_adapters(
-    targets: &[Target],
-    opener: impl Fn(&Target) -> Result<Box<dyn Transport>>,
-) -> Result<AdapterList> {
-    let adapters = targets
-        .iter()
-        .map(|target| {
-            let t = opener(target)?;
-            adapter_row(target, t.as_ref())
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(AdapterList { adapters })
 }
 
 fn operational(t: &dyn Transport) -> Result<AdpInfo> {
@@ -232,7 +213,7 @@ pub struct Limits {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ControllerInfo {
-    pub index: u8,
+    pub index: usize,
     pub host: u32,
     pub state: &'static str,
     pub chip: String,
@@ -297,7 +278,7 @@ pub fn controller_info(target: &Target, t: &dyn Transport) -> Result<ControllerI
     }
     let m = man0.as_ref();
     Ok(ControllerInfo {
-        index: target.index,
+        index: target.id,
         host: target.host.host_no,
         state: adp_state_name(info.adp_state),
         chip: chip_of(info.pci_dev_id, m.map(|m| m.chip_name.as_str())),

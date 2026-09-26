@@ -4,35 +4,13 @@ use serde::Serialize;
 use super::cli::{DiagRead, Uploaded};
 use super::diag::{DiagQuery, Event};
 use super::inventory::{
-    AdapterList, BootInfo, ControllerInfo, ControllerTemperature, Drive, DriveList, EnclosureList,
-    FirmwareInfo, LogInfo, PhyErrorList, PhyList, Volume, VolumeList, VolumeStatus,
-    VolumeStatusList,
+    BootInfo, ControllerInfo, ControllerTemperature, Drive, DriveList, EnclosureList, FirmwareInfo,
+    LogInfo, PhyErrorList, PhyList, Volume, VolumeList, VolumeStatus, VolumeStatusList,
 };
 use super::pages::BootDevice;
-use crate::output::{self, Fields, Format, Render, Table};
+use crate::output::{Fields, Render, Table};
 
-pub trait Emit {
-    fn emit_to(&self, format: Format) -> Result<()>;
-    fn text(&self) -> String;
-}
-
-impl<T: Serialize + Render> Emit for T {
-    fn emit_to(&self, format: Format) -> Result<()> {
-        match format {
-            Format::Text => {
-                print!("{}", self.text());
-                Ok(())
-            }
-            Format::Json => output::emit(format, self),
-        }
-    }
-
-    fn text(&self) -> String {
-        let mut out = String::new();
-        self.render(&mut out);
-        out
-    }
-}
+pub use crate::output::Emit;
 
 fn opt<T: ToString>(v: &Option<T>) -> String {
     v.as_ref()
@@ -50,40 +28,6 @@ fn render_table(t: &Table, empty: &str, out: &mut String) {
 
 fn yes_no(v: bool) -> &'static str {
     if v { "Yes" } else { "No" }
-}
-
-impl Render for AdapterList {
-    fn render(&self, out: &mut String) {
-        let mut t = Table::new([
-            "Index",
-            "Gen",
-            "Chip",
-            "Vendor",
-            "Device",
-            "SubVendor",
-            "SubDevice",
-            "PCI",
-            "Host",
-            "Firmware",
-            "BIOS",
-        ]);
-        for a in &self.adapters {
-            t.row([
-                a.index.to_string(),
-                a.generation.to_string(),
-                a.chip.clone(),
-                format!("{:04x}", a.vendor_id),
-                format!("{:04x}", a.device_id),
-                format!("{:04x}", a.subsystem_vendor_id),
-                format!("{:04x}", a.subsystem_device_id),
-                a.pci_address.clone(),
-                format!("host{}", a.host),
-                a.firmware_version.clone(),
-                a.bios_version.clone(),
-            ]);
-        }
-        render_table(&t, "No adapters found", out);
-    }
 }
 
 impl Render for ControllerInfo {

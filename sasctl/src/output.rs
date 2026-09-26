@@ -10,17 +10,27 @@ pub trait Render {
     fn render(&self, out: &mut String);
 }
 
-pub fn emit<T: Serialize + Render>(format: Format, value: &T) -> anyhow::Result<()> {
-    let text = match format {
-        Format::Json => serde_json::to_string_pretty(value)? + "\n",
-        Format::Text => {
-            let mut out = String::new();
-            value.render(&mut out);
-            out
-        }
-    };
-    print!("{text}");
-    Ok(())
+pub trait Emit {
+    fn json(&self) -> anyhow::Result<serde_json::Value>;
+    fn text(&self) -> String;
+}
+
+impl std::fmt::Debug for dyn Emit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text())
+    }
+}
+
+impl<T: Serialize + Render> Emit for T {
+    fn json(&self) -> anyhow::Result<serde_json::Value> {
+        Ok(serde_json::to_value(self)?)
+    }
+
+    fn text(&self) -> String {
+        let mut out = String::new();
+        self.render(&mut out);
+        out
+    }
 }
 
 #[derive(Default)]

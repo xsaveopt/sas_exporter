@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use serde::Serialize;
 
 use super::transport::{Generation, LinuxTransport, NR_BTDHMAPPING, NR_IOCINFO, Transport};
@@ -56,22 +56,9 @@ pub fn enumerate(sysfs_root: &Path) -> Vec<Target> {
     order_targets(sysfs::scsi_hosts(sysfs_root, &["mpt2sas", "mpt3sas"]))
 }
 
-pub fn select(targets: Vec<Target>, index: usize) -> Result<Target> {
-    let count = targets.len();
-    match targets.into_iter().find(|t| t.index == index) {
-        Some(t) => Ok(t),
-        None if count == 0 => bail!("no mpt2sas or mpt3sas adapters found"),
-        None => bail!(
-            "controller {index} does not exist, valid indices are 0 to {}",
-            count - 1
-        ),
-    }
-}
-
 pub fn open(target: &Target) -> Result<Box<dyn Transport>> {
     let node = Path::new(target.generation.node());
-    let t = LinuxTransport::open(node, target.generation, target.ioc_number)
-        .with_context(|| format!("controller {}", target.index))?;
+    let t = LinuxTransport::open(node, target.generation, target.ioc_number)?;
     Ok(Box::new(t))
 }
 

@@ -20,7 +20,7 @@ use super::transport::{
 };
 use crate::Ctx;
 use crate::bytes::{Le, LeMut};
-use crate::output::{Format, Render};
+use crate::output::Format;
 use crate::sysfs::ScsiHost;
 
 #[derive(Clone, Debug)]
@@ -613,6 +613,7 @@ fn ctx(yes: bool, sysfs: PathBuf) -> Ctx {
     Ctx {
         format: Format::Text,
         yes,
+        interactive: false,
         sysfs,
     }
 }
@@ -629,27 +630,15 @@ fn host(host_no: u32, proc_name: &str, unique_id: Option<u32>) -> ScsiHost {
 
 fn target() -> Target {
     Target {
+        id: 2,
         index: 2,
         host: host(7, "mpi3mr", Some(2)),
     }
 }
 
 fn run_in(mock: &Mock, yes: bool, sysfs: &Path, args: &[&str]) -> Result<String> {
-    use clap::Parser;
-    #[derive(Parser)]
-    struct Harness {
-        #[command(flatten)]
-        args: cli::Args,
-    }
-    let mut argv = vec!["sasctl", "-c", "2"];
-    argv.extend_from_slice(args);
-    let h = Harness::try_parse_from(argv).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let out = cli::execute(
-        &h.args.command,
-        &ctx(yes, sysfs.to_path_buf()),
-        &target(),
-        mock,
-    )?;
+    let command = crate::cli::try_parse(args)?;
+    let out = cli::execute(&command, &ctx(yes, sysfs.to_path_buf()), &target(), mock)?;
     Ok(out.text())
 }
 
@@ -987,10 +976,6 @@ fn enumeration_uses_proc_name_and_unique_id() {
     ]);
     let order: Vec<(u8, u32)> = targets.iter().map(|t| (t.index, t.host.host_no)).collect();
     assert_eq!(order, vec![(0, 4), (1, 9)]);
-    assert_eq!(adapter::select(targets.clone(), 1).unwrap().host.host_no, 9);
-    let err = adapter::select(targets, 7).unwrap_err().to_string();
-    assert!(err.contains("0, 1"), "{err}");
-    assert!(adapter::select(Vec::new(), 0).is_err());
 
     let root = fixture("test-mpi3-enum");
     for (n, driver, uid) in [
@@ -1010,32 +995,29 @@ fn enumeration_uses_proc_name_and_unique_id() {
 }
 
 #[test]
-fn list_reads_adpinfo_and_facts_through_the_opener() {
+fn adapter_row_reads_adpinfo_and_facts() {
     let targets =
         adapter::order_targets(vec![host(4, "mpi3mr", Some(0)), host(8, "mpi3mr", Some(1))]);
-    let list = inventory::list_adapters(&targets, |t| {
-        let mut m = base_mock();
-        m.id = t.index;
-        if t.index == 1 {
-            m.adpinfo = adpinfo(2);
-        }
-        Ok(Box::new(m) as Box<dyn Transport>)
-    })
-    .unwrap();
-    assert_eq!(list.adapters.len(), 2);
-    let a = &list.adapters[0];
+    let rows: Vec<_> = targets
+        .iter()
+        .map(|t| {
+            let mut m = base_mock();
+            m.id = t.index;
+            if t.index == 1 {
+                m.adpinfo = adpinfo(2);
+            }
+            inventory::adapter_row(t, &m).unwrap()
+        })
+        .collect();
+    let a = &rows[0];
     assert_eq!((a.index, a.host), (0, 4));
     assert_eq!(a.chip, "SAS4116");
     assert_eq!(a.pci_address, "0001:41:03.1");
     assert_eq!(a.firmware_version.as_deref(), Some("8.0.1.0.00000-00042"));
     assert_eq!(a.personality, Some("RAID"));
-    let b = &list.adapters[1];
+    let b = &rows[1];
     assert_eq!(b.state, "fault");
     assert!(b.firmware_version.is_none());
-    let mut out = String::new();
-    list.render(&mut out);
-    assert!(out.contains("SAS4116"));
-    assert!(out.contains("fault"));
 }
 
 #[test]
@@ -1271,7 +1253,7 @@ fn controller_show_combines_adpinfo_facts_pages_and_manifest() {
     io4.put_u8(0x14, 0x01);
     io4.put_u16(0x18, 0xFFFF);
     mock.page(config::IO_UNIT_4, 0, io4);
-    let out = run(&mock, false, &["controller", "show"]).unwrap();
+    let out = run(&mock, false, &["controller"]).unwrap();
     assert!(out.contains("Controller 2"), "{out}");
     assert!(out.contains("PERC H965i"));
     assert!(out.contains("8.0.1.0.00000-00042"));
@@ -1287,7 +1269,7 @@ fn controller_show_combines_adpinfo_facts_pages_and_manifest() {
 
     let mut faulted = rich_mock();
     faulted.adpinfo = adpinfo(4);
-    let err = run(&faulted, false, &["controller", "show"]).unwrap_err();
+    let err = run(&faulted, false, &["controller"]).unwrap_err();
     assert!(err.to_string().contains("unrecoverable"));
 }
 
@@ -1296,7 +1278,7 @@ fn drive_list_keeps_end_devices_and_nvme_and_drops_the_sep() {
     let mock = rich_mock();
     let root = fixture("test-mpi3-os");
     fs::create_dir_all(root.join("class/scsi_device/7:0:0:0/device/block/sdb")).unwrap();
-    let out = run_in(&mock, false, &root, &["drive", "list"]).unwrap();
+    let out = run_in(&mock, false, &root, &["drive"]).unwrap();
     fs::remove_dir_all(&root).unwrap();
     assert!(out.contains("2:0"), "{out}");
     assert!(out.contains("SAS_HDD"));
@@ -1367,23 +1349,23 @@ fn drive_show_fills_identity_capacity_and_placement() {
     assert_eq!(d.enclosure_logical_id.as_deref(), Some("500a098000000002"));
     assert_eq!(d.state, "healthy");
     assert!(d.exposed);
-    let out = run(&mock, false, &["drive", "show", "3:0"]).unwrap();
+    let out = run(&mock, false, &["drive", "3:0"]).unwrap();
     assert!(out.contains("S5XYZ"), "{out}");
     assert!(out.contains("MPK7525Q"));
     assert!(out.contains("16.0 GT/s"));
     assert!(out.contains("37C (98.60F)"));
-    let err = run(&mock, false, &["drive", "show", "2:24"]).unwrap_err();
+    let err = run(&mock, false, &["drive", "2:24"]).unwrap_err();
     assert!(err.to_string().contains("2:24"));
 }
 
 #[test]
 fn drive_smart_uses_log_sense_for_sas_and_the_health_log_for_nvme() {
     let mock = rich_mock();
-    let out = run(&mock, false, &["drive", "smart", "2:0"]).unwrap();
+    let out = run(&mock, false, &["drive", "2:0", "smart"]).unwrap();
     assert!(out.contains("Healthy") && out.contains("Yes"), "{out}");
     assert!(out.contains("ASC 0x00 ASCQ 0x00"));
     assert!(out.contains("34C"));
-    let out = run(&mock, false, &["drive", "smart", "3:0"]).unwrap();
+    let out = run(&mock, false, &["drive", "3:0", "smart"]).unwrap();
     assert!(
         out.contains("Percentage used") && out.contains("3%"),
         "{out}"
@@ -1395,14 +1377,14 @@ fn drive_smart_uses_log_sense_for_sas_and_the_health_log_for_nvme() {
             .iter()
             .any(|c| c.frame() == nvme::smart_log_request(0x0B).frame)
     );
-    let err = run(&mock, false, &["drive", "smart", "2:1"]).unwrap_err();
+    let err = run(&mock, false, &["drive", "2:1", "smart"]).unwrap_err();
     assert!(err.to_string().contains("not documented"));
 }
 
 #[test]
 fn volumes_come_from_the_vd_form_and_read_capacity() {
     let mock = rich_mock();
-    let out = run(&mock, false, &["volume", "list"]).unwrap();
+    let out = run(&mock, false, &["volume"]).unwrap();
     assert!(out.contains("RAID5"), "{out}");
     assert!(out.contains("Optimal"));
     assert!(out.contains("RAID1"));
@@ -1423,16 +1405,16 @@ fn volumes_come_from_the_vd_form_and_read_capacity() {
     assert_eq!(v.abort_timeout_seconds, Some(30));
     assert_eq!(v.reset_timeout_seconds, None);
     assert_eq!(v.linux_channel_target.as_deref(), Some("1:0"));
-    let out = run(&mock, false, &["volume", "show", "1"]).unwrap();
+    let out = run(&mock, false, &["volume", "1"]).unwrap();
     assert!(out.contains("Virtual disk 1"));
     assert!(out.contains("16 MiB low, 64 MiB high"));
-    assert!(run(&mock, false, &["volume", "show", "9"]).is_err());
+    assert!(run(&mock, false, &["volume", "9"]).is_err());
 }
 
 #[test]
 fn enclosure_list_reads_each_handle_and_the_sep_inquiry() {
     let mock = rich_mock();
-    let out = run(&mock, false, &["enclosure", "list"]).unwrap();
+    let out = run(&mock, false, &["enclosure"]).unwrap();
     assert!(out.contains("500a098000000002"), "{out}");
     assert!(out.contains("VirtualSES"));
     assert!(out.contains("PCIe"));
@@ -1467,7 +1449,7 @@ fn phy_mock() -> Mock {
 #[test]
 fn phy_list_and_errors_come_from_sas_io_unit_and_phy_pages() {
     let mock = phy_mock();
-    let out = run(&mock, false, &["phy", "list"]).unwrap();
+    let out = run(&mock, false, &["phy"]).unwrap();
     assert!(out.contains("12.0 Gb/s"), "{out}");
     assert!(out.contains("22.5 Gb/s"));
     assert!(out.contains("5000c50000000009"));
@@ -1503,7 +1485,7 @@ fn temperature_show_prints_raw_readings_without_a_unit() {
     io19.put_u16(0x12, 0x0009);
     io19.put_u16(0x14, 109);
     mock.page(config::IO_UNIT_19, 0, io19);
-    let out = run(&mock, false, &["temperature", "show"]).unwrap();
+    let out = run(&mock, false, &["temperature"]).unwrap();
     assert!(out.contains("unit is not documented"), "{out}");
     assert!(out.contains("61"));
     assert!(out.contains("outlet"));
@@ -1515,7 +1497,7 @@ fn temperature_show_prints_raw_readings_without_a_unit() {
     assert!(json.contains("\"raw\":61"));
     assert!(!json.contains("celsius"));
     let bare = rich_mock();
-    assert!(run(&bare, false, &["temperature", "show"]).is_err());
+    assert!(run(&bare, false, &["temperature"]).is_err());
 }
 
 #[test]
@@ -1544,7 +1526,7 @@ fn event_list_reads_sequence_numbers_then_pages_through_the_log() {
         .map(|f| f.u32_at(0x0C))
         .collect();
     assert_eq!(starts, vec![100, 132]);
-    let out = run(&mock, false, &["event", "list", "--latest", "3"]).unwrap();
+    let out = run(&mock, false, &["event", "--count", "3"]).unwrap();
     assert!(out.contains("oldest 100, newest 140, boot 120"), "{out}");
     assert!(out.contains("138") && out.contains("140") && !out.contains("137"));
     assert!(out.contains("0x018c"));
@@ -1554,7 +1536,7 @@ fn event_list_reads_sequence_numbers_then_pages_through_the_log() {
     seq.put_u32(0x00, 5);
     seq.put_u32(0x04, 1);
     empty.seq = seq;
-    let out = run(&empty, false, &["event", "list"]).unwrap();
+    let out = run(&empty, false, &["event"]).unwrap();
     assert!(out.contains("No events logged"));
 }
 
@@ -1565,7 +1547,7 @@ fn firmware_show_reports_running_package_and_nvdata_versions() {
     io0.put_u32(0x10, 0x0A00_0001);
     io0.put_u32(0x14, 0x0A00_0002);
     mock.page(config::IO_UNIT_0, 0, io0);
-    let out = run(&mock, false, &["firmware", "show"]).unwrap();
+    let out = run(&mock, false, &["firmware"]).unwrap();
     assert!(out.contains("8.0.1.0.00000-00042"), "{out}");
     assert!(out.contains("8.0.3.0.00000-00016"));
     assert!(out.contains("GCA"));
@@ -1580,8 +1562,8 @@ fn firmware_show_reports_running_package_and_nvdata_versions() {
 const WRITES: &[&[&str]] = &[
     &["controller", "reset"],
     &["controller", "reset", "--snapdump"],
-    &["phy", "reset", "0"],
-    &["phy", "reset", "1", "--hard"],
+    &["phy", "0", "reset"],
+    &["phy", "1", "reset", "--hard"],
 ];
 
 #[test]
@@ -1610,7 +1592,7 @@ fn confirmed_resets_send_exactly_the_documented_requests() {
     assert_eq!(mock.calls()[0].dout, vec![2, 0, 0, 0]);
 
     let mock = phy_mock();
-    let out = run(&mock, true, &["phy", "reset", "1", "--hard"]).unwrap();
+    let out = run(&mock, true, &["phy", "1", "reset", "--hard"]).unwrap();
     assert!(out.contains("phy 1 hard reset"));
     let ctl = mock.mpt_calls(mpi::FUNCTION_IO_UNIT_CONTROL);
     assert_eq!(ctl.len(), 1);
@@ -1618,7 +1600,7 @@ fn confirmed_resets_send_exactly_the_documented_requests() {
     assert_eq!(ctl[0].entries()[1].buf_type, BUF_MPI_REPLY);
 
     let mock = phy_mock();
-    let err = run(&mock, true, &["phy", "reset", "9"]).unwrap_err();
+    let err = run(&mock, true, &["phy", "9", "reset"]).unwrap_err();
     assert!(err.to_string().contains("phy 9 does not exist"));
     assert!(mock.mpt_calls(mpi::FUNCTION_IO_UNIT_CONTROL).is_empty());
 }

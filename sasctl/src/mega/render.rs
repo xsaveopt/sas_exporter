@@ -78,37 +78,6 @@ fn components(title: &str, items: &[Component], out: &mut String) {
     t.render(out);
 }
 
-impl Render for ControllerList {
-    fn render(&self, out: &mut String) {
-        if self.controllers.is_empty() {
-            out.push_str("No MegaRAID controllers found\n");
-            return;
-        }
-        let mut t = Table::new([
-            "Ctl", "Host", "PCI", "Model", "Serial", "Firmware", "VDs", "PDs", "ROC",
-        ]);
-        for c in &self.controllers {
-            t.row([
-                c.index.to_string(),
-                c.host_no.to_string(),
-                opt(c.pci_address.as_ref()),
-                c.product_name
-                    .clone()
-                    .or(c.error.clone())
-                    .unwrap_or_default(),
-                opt(c.serial_number.as_ref()),
-                opt(c.package_version.as_ref()),
-                opt(c.volumes),
-                opt(c.drives),
-                c.roc_celsius
-                    .map(|v| format!("{v} C"))
-                    .unwrap_or_else(|| "-".into()),
-            ]);
-        }
-        t.render(out);
-    }
-}
-
 impl Render for ControllerSummary {
     fn render(&self, out: &mut String) {
         let i = &self.info;
@@ -258,6 +227,16 @@ impl Render for TemperatureReport {
         f.add("ROC", celsius(self.roc_celsius))
             .add("Controller", celsius(self.controller_celsius));
         f.render(out);
+    }
+}
+
+impl Render for Temperatures {
+    fn render(&self, out: &mut String) {
+        self.controller.render(out);
+        if !self.drives.drives.is_empty() {
+            out.push('\n');
+            self.drives.render(out);
+        }
     }
 }
 

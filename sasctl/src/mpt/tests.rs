@@ -249,6 +249,7 @@ fn ctx(yes: bool) -> Ctx {
     Ctx {
         format: Format::Text,
         yes,
+        interactive: false,
         sysfs: PathBuf::new(),
     }
 }
@@ -273,16 +274,8 @@ fn target() -> Target {
 }
 
 fn run(mock: &Mock, yes: bool, args: &[&str]) -> Result<String> {
-    use clap::Parser;
-    #[derive(Parser)]
-    struct Harness {
-        #[command(flatten)]
-        args: cli::Args,
-    }
-    let mut argv = vec!["sasctl", "-c", "0"];
-    argv.extend_from_slice(args);
-    let h = Harness::try_parse_from(argv).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let out = cli::execute(&h.args.command, &ctx(yes), &target(), mock)?;
+    let command = crate::cli::try_parse(args)?;
+    let out = cli::execute(&command, &ctx(yes), &target(), mock)?;
     Ok(out.text())
 }
 
@@ -585,28 +578,21 @@ fn enumeration_numbers_sas2_before_sas3_by_ioc_number() {
     assert_eq!(targets[1].generation, Generation::Sas2);
     assert_eq!(targets[2].generation, Generation::Sas3);
     assert_eq!(targets[2].generation.node(), "/dev/mpt3ctl");
-    assert!(adapter::select(targets.clone(), 4).is_err());
-    assert_eq!(adapter::select(targets, 2).unwrap().host.host_no, 5);
-    assert!(adapter::select(Vec::new(), 0).is_err());
 }
 
 #[test]
-fn list_uses_the_opener_for_every_adapter() {
+fn adapter_row_reads_iocinfo() {
     let targets = adapter::order_targets(vec![host(3, "mpt2sas", Some(0))]);
-    let list = inventory::list_adapters(&targets, |_| {
-        let mut m = Mock::sas3();
-        let mut b = vec![0u8; 92];
-        b.put_u32(0x14, 0x72);
-        b.put_u32(0x28, 0x1400_0700);
-        m.raw_answers.insert(super::transport::NR_IOCINFO, b);
-        Ok(Box::new(m) as Box<dyn Transport>)
-    })
-    .unwrap();
-    assert_eq!(list.adapters.len(), 1);
-    assert_eq!(list.adapters[0].chip, "SAS2008");
-    assert_eq!(list.adapters[0].generation, "SAS2");
-    assert_eq!(list.adapters[0].firmware_version, "20.00.07.00");
-    assert_eq!(list.adapters[0].vendor_id, 0x1000);
+    let mut m = Mock::sas3();
+    let mut b = vec![0u8; 92];
+    b.put_u32(0x14, 0x72);
+    b.put_u32(0x28, 0x1400_0700);
+    m.raw_answers.insert(super::transport::NR_IOCINFO, b);
+    let row = inventory::adapter_row(&targets[0], &m).unwrap();
+    assert_eq!(row.chip, "SAS2008");
+    assert_eq!(row.generation, "SAS2");
+    assert_eq!(row.firmware_version, "20.00.07.00");
+    assert_eq!(row.vendor_id, 0x1000);
 }
 
 #[test]
@@ -1080,29 +1066,34 @@ fn drive_address_parses_enclosure_and_slot() {
 
 const WRITES: &[&[&str]] = &[
     &["controller", "reset"],
-    &["drive", "locate", "2:0", "--on"],
-    &["drive", "locate", "2:0", "--off"],
-    &["drive", "online", "2:0"],
-    &["drive", "offline", "2:0"],
-    &["volume", "activate", "323"],
-    &["volume", "check", "323"],
-    &["hotspare", "remove", "2:0"],
-    &["phy", "reset", "1"],
-    &["phy", "reset", "1", "--hard"],
+    &["drive", "2:0", "locate"],
+    &["drive", "2:0", "locate", "off"],
+    &["drive", "2:0", "online"],
+    &["drive", "2:0", "offline"],
+    &["volume", "323", "activate"],
+    &["volume", "323", "check"],
+    &["drive", "2:0", "unspare"],
+    &["phy", "1", "reset"],
+    &["phy", "1", "reset", "--hard"],
     &["event", "enable"],
     &["boot", "set", "--drive", "2:0"],
     &["boot", "set", "--alternate", "--volume", "323"],
-    &["diag", "register", "--type", "trace", "--size", "4096"],
-    &["diag", "release", "--unique-id", "0x4252434d"],
-    &["diag", "unregister", "--unique-id", "1"],
-    &["volume", "create", "--level", "raid1", "2:0", "2:1"],
-    &["volume", "delete", "323"],
-    &["volume", "delete", "--all", "--zero-lba0"],
-    &["hotspare", "add", "2:0"],
-    &["hotspare", "add", "2:0", "--pool", "3"],
+    &["diag", "register", "trace", "--size", "4096"],
+    &["diag", "release", "0x4252434d"],
+    &["diag", "unregister", "1"],
+    &["volume", "create", "raid1", "2:0", "2:1"],
+    &["volume", "323", "delete"],
+    &["config", "clear", "--zero-lba0"],
+    &["drive", "2:0", "spare"],
+    &["drive", "2:0", "spare", "--pool", "3"],
     &["log", "clear"],
     &["firmware", "flash", "target/test-fixtures/missing.bin"],
-    &["bios", "flash", "target/test-fixtures/missing.rom"],
+    &[
+        "firmware",
+        "flash",
+        "--bios",
+        "target/test-fixtures/missing.rom",
+    ],
 ];
 
 #[test]
@@ -1122,10 +1113,10 @@ fn read_commands_do_not_need_yes() {
     let mut mock = Mock::sas3();
     add_volume(&mut mock);
     add_sas_disk(&mut mock);
-    let out = run(&mock, false, &["drive", "list"]).unwrap();
+    let out = run(&mock, false, &["drive"]).unwrap();
     assert!(out.contains("2:0"));
     assert!(out.contains("SAS_HDD"));
-    let out = run(&mock, false, &["volume", "status"]).unwrap();
+    let out = run(&mock, false, &["volume", "323", "progress"]).unwrap();
     assert!(out.contains("Consistency Check"));
     assert!(out.contains("2.93%"));
 }
@@ -1133,7 +1124,7 @@ fn read_commands_do_not_need_yes() {
 #[test]
 fn confirmed_locate_sends_exactly_one_sep_request() {
     let mock = Mock::sas3();
-    let out = run(&mock, true, &["drive", "locate", "2:5", "--on"]).unwrap();
+    let out = run(&mock, true, &["drive", "2:5", "locate"]).unwrap();
     assert!(out.contains("turned on"));
     let sent = mock.sent();
     assert_eq!(sent.len(), 1);
@@ -1150,11 +1141,11 @@ fn confirmed_hotspare_remove_checks_the_state() {
         0xFFFF,
         sas_device(0x0B, 2, 0, SAS_DISK, 0x5000),
     );
-    assert!(run(&mock, true, &["hotspare", "remove", "2:0"]).is_err());
+    assert!(run(&mock, true, &["drive", "2:0", "unspare"]).is_err());
     assert!(mock.sent().iter().all(|s| s.frame[3] != 0x15));
-    let err = run(&mock, true, &["drive", "offline", "2:9"]).unwrap_err();
+    let err = run(&mock, true, &["drive", "2:9", "offline"]).unwrap_err();
     assert!(err.to_string().contains("2:9"));
-    run(&mock, true, &["drive", "offline", "2:0"]).unwrap();
+    run(&mock, true, &["drive", "2:0", "offline"]).unwrap();
     let action = mock
         .sent()
         .into_iter()
@@ -1171,7 +1162,7 @@ fn failed_ioc_status_is_reported_with_log_info() {
     reply.put_u16(0x0E, 0x8007);
     reply.put_u32(0x10, 0x3112_0101);
     mock.replies.insert(0x1B, reply);
-    let err = run(&mock, true, &["phy", "reset", "2"]).unwrap_err();
+    let err = run(&mock, true, &["phy", "2", "reset"]).unwrap_err();
     let text = err.to_string();
     assert!(text.contains("0x0007 (INVALID_FIELD)"), "{text}");
     assert!(text.contains("0x31120101"), "{text}");
@@ -1392,9 +1383,7 @@ fn volume_create_sends_the_creation_struct_built_from_the_pages() {
     let out = run(
         &mock,
         true,
-        &[
-            "volume", "create", "--level", "raid1", "2:0", "2:1", "--name", "data",
-        ],
+        &["volume", "create", "raid1", "2:0", "2:1", "--name", "data"],
     )
     .unwrap();
     assert!(out.contains("1000000 MB"), "{out}");
@@ -1417,8 +1406,8 @@ fn volume_create_sends_the_creation_struct_built_from_the_pages() {
         &mock,
         true,
         &[
-            "volume", "create", "--level", "raid10", "2:0", "2:1", "2:2", "2:3", "--size", "1000",
-            "--stripe", "256", "--pool", "2",
+            "volume", "create", "raid10", "2:0", "2:1", "2:2", "2:3", "--size", "1000", "--stripe",
+            "256k", "--pool", "2",
         ],
     )
     .unwrap();
@@ -1437,12 +1426,7 @@ fn volume_create_sends_the_creation_struct_built_from_the_pages() {
     assert_eq!(members, vec![(0, 0x20), (1, 0x21), (2, 0x22), (3, 0x23)]);
 
     let mock = raid_mock(0);
-    run(
-        &mock,
-        true,
-        &["volume", "create", "--level", "raid0", "2:0", "2:1"],
-    )
-    .unwrap();
+    run(&mock, true, &["volume", "create", "raid0", "2:0", "2:1"]).unwrap();
     let d = &mock.raid_actions()[0].data_out;
     assert_eq!(d.u32_at(0x04), 0x8000_0000);
     assert_eq!(d.u64_at(0x10), 2_000_000 * MB - 1);
@@ -1452,40 +1436,24 @@ fn volume_create_sends_the_creation_struct_built_from_the_pages() {
 #[test]
 fn volume_create_enforces_the_limits_before_sending() {
     let cases: &[(&[&str], &str)] = &[
-        (&["--level", "raid1", "2:0", "2:1", "2:2"], "exactly 2"),
-        (&["--level", "raid10", "2:0", "2:1", "2:2"], "needs 4 to 10"),
-        (&["--level", "raid1e", "2:0", "2:1"], "needs 3 to 10"),
-        (&["--level", "raid0", "2:0", "2:0"], "more than once"),
-        (&["--level", "raid0", "2:0", "2:4"], "SAS and SATA"),
+        (&["raid1", "2:0", "2:1", "2:2"], "exactly 2"),
+        (&["raid10", "2:0", "2:1", "2:2"], "needs 4 to 10"),
+        (&["raid1e", "2:0", "2:1"], "needs 3 to 10"),
+        (&["raid0", "2:0", "2:0"], "more than once"),
+        (&["raid0", "2:0", "2:4"], "SAS and SATA"),
+        (&["raid0", "2:0", "2:5"], "not an unconfigured disk"),
+        (&["raid0", "2:0", "2:9"], "2:9"),
         (
-            &["--level", "raid0", "2:0", "2:5"],
-            "not an unconfigured disk",
-        ),
-        (&["--level", "raid0", "2:0", "2:9"], "2:9"),
-        (
-            &["--level", "raid1", "2:0", "2:1", "--size", "1000001"],
+            &["raid1", "2:0", "2:1", "--size", "1000001"],
             "1 to 1000000",
         ),
+        (&["raid1", "2:0", "2:1", "--stripe", "64k"], "no stripe"),
         (
-            &["--level", "raid1", "2:0", "2:1", "--stripe", "64"],
-            "no stripe",
-        ),
-        (
-            &["--level", "raid1e", "2:0", "2:1", "2:2", "--stripe", "128"],
+            &["raid1e", "2:0", "2:1", "2:2", "--stripe", "128k"],
             "not supported",
         ),
-        (
-            &[
-                "--level",
-                "raid0",
-                "2:0",
-                "2:1",
-                "--name",
-                "sixteen-chars-xx",
-            ],
-            "15",
-        ),
-        (&["--level", "raid0", "2:0", "2:1", "--pool", "8"], "pool"),
+        (&["raid0", "2:0", "2:1", "--name", "sixteen-chars-xx"], "15"),
+        (&["raid0", "2:0", "2:1", "--pool", "8"], "pool"),
     ];
     for (args, want) in cases {
         let mock = raid_mock(pages::MAN4_NO_MIX_SAS_SATA);
@@ -1505,13 +1473,9 @@ fn volume_create_enforces_the_limits_before_sending() {
         config::RAID_CONFIG_FORM_ACTIVE,
         raid_config_page((2, 4, 0), 0, &[]),
     );
-    let err = run(
-        &mock,
-        true,
-        &["volume", "create", "--level", "raid0", "2:0", "2:1"],
-    )
-    .unwrap_err()
-    .to_string();
+    let err = run(&mock, true, &["volume", "create", "raid0", "2:0", "2:1"])
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("at most 2 volumes"), "{err}");
     assert!(mock.raid_actions().is_empty());
 
@@ -1522,9 +1486,7 @@ fn volume_create_enforces_the_limits_before_sending() {
     let err = run(
         &mock,
         true,
-        &[
-            "volume", "create", "--level", "raid10", "2:0", "2:1", "2:2", "2:3",
-        ],
+        &["volume", "create", "raid10", "2:0", "2:1", "2:2", "2:3"],
     )
     .unwrap_err()
     .to_string();
@@ -1536,7 +1498,7 @@ fn volume_create_enforces_the_limits_before_sending() {
 fn volume_delete_sends_the_lba0_word() {
     let mut mock = Mock::sas3();
     add_volume(&mut mock);
-    run(&mock, true, &["volume", "delete", "323", "--zero-lba0"]).unwrap();
+    run(&mock, true, &["volume", "323", "delete", "--zero-lba0"]).unwrap();
     let a = mock.raid_actions();
     assert_eq!(a.len(), 1);
     assert_eq!((a[0].sge_offset, a[0].frame.len()), (8, 32));
@@ -1545,13 +1507,13 @@ fn volume_delete_sends_the_lba0_word() {
 
     let mut mock = Mock::sas3();
     add_volume(&mut mock);
-    run(&mock, true, &["volume", "delete", "323"]).unwrap();
+    run(&mock, true, &["volume", "323", "delete"]).unwrap();
     assert_eq!(mock.raid_actions()[0].frame.u32_at(0x10), 0);
 
-    let err = run(&mock, true, &["volume", "delete", "7"]).unwrap_err();
+    let err = run(&mock, true, &["volume", "7", "delete"]).unwrap_err();
     assert!(err.to_string().contains("no volume 7"));
     assert!(run(&mock, true, &["volume", "delete"]).is_err());
-    assert!(run(&mock, true, &["volume", "delete", "7", "--all"]).is_err());
+    assert!(run(&mock, true, &["volume", "7", "delete", "--all"]).is_err());
 }
 
 #[test]
@@ -1576,7 +1538,7 @@ fn volume_delete_all_removes_volumes_then_leftover_spares() {
         config::RAID_CONFIG_FORM_CONFIGNUM | 3,
         raid_config_page((0, 2, 2), 3, &[(0x0002, 0, 4), (0x0012, 0, 6)]),
     );
-    let out = run(&mock, true, &["volume", "delete", "--all", "--zero-lba0"]).unwrap();
+    let out = run(&mock, true, &["config", "clear", "--zero-lba0"]).unwrap();
     assert!(out.contains("volume 323 deleted"), "{out}");
     let actions: Vec<(u8, u16, u8, u32)> = mock
         .raid_actions()
@@ -1611,12 +1573,12 @@ fn volume_delete_all_removes_volumes_then_leftover_spares() {
         config::RAID_CONFIG_FORM_CONFIGNUM | 1,
         raid_config_page((1, 2, 1), 1, &[(0x0000, 0x145, 0), (0x0002, 0, 4)]),
     );
-    let err = run(&mock, true, &["volume", "delete", "--all"]).unwrap_err();
+    let err = run(&mock, true, &["config", "clear"]).unwrap_err();
     assert!(err.to_string().contains("still configured"));
     assert!(mock.raid_actions().iter().all(|s| s.frame[0] != 0x1E));
 
     let mock = Mock::sas3();
-    let err = run(&mock, true, &["volume", "delete", "--all"]).unwrap_err();
+    let err = run(&mock, true, &["config", "clear"]).unwrap_err();
     assert!(err.to_string().contains("no active"));
     assert!(mock.raid_actions().is_empty());
 }
@@ -1624,7 +1586,7 @@ fn volume_delete_all_removes_volumes_then_leftover_spares() {
 #[test]
 fn hotspare_add_sends_handle_and_pool_bitmap() {
     let mock = raid_mock(0);
-    run(&mock, true, &["hotspare", "add", "2:2"]).unwrap();
+    run(&mock, true, &["drive", "2:2", "spare"]).unwrap();
     let a = mock.raid_actions();
     assert_eq!(a.len(), 1);
     assert_eq!((a[0].sge_offset, a[0].frame.len()), (8, 32));
@@ -1632,12 +1594,12 @@ fn hotspare_add_sends_handle_and_pool_bitmap() {
     assert_eq!(&a[0].frame[0x10..0x14], &[0x01, 0x00, 0x22, 0x00]);
 
     let mock = raid_mock(0);
-    run(&mock, true, &["hotspare", "add", "2:3", "--pool", "5"]).unwrap();
+    run(&mock, true, &["drive", "2:3", "spare", "--pool", "5"]).unwrap();
     assert_eq!(mock.raid_actions()[0].frame.u32_at(0x10), 0x0023_0020);
 
     let mock = raid_mock(0);
-    assert!(run(&mock, true, &["hotspare", "add", "2:5"]).is_err());
-    assert!(run(&mock, true, &["hotspare", "add", "2:0", "--pool", "8"]).is_err());
+    assert!(run(&mock, true, &["drive", "2:5", "spare"]).is_err());
+    assert!(run(&mock, true, &["drive", "2:0", "spare", "--pool", "8"]).is_err());
 
     let mut mock = raid_mock(0);
     mock.page(
@@ -1645,7 +1607,7 @@ fn hotspare_add_sends_handle_and_pool_bitmap() {
         config::RAID_CONFIG_FORM_ACTIVE,
         raid_config_page((1, 4, 2), 0, &[]),
     );
-    let err = run(&mock, true, &["hotspare", "add", "2:2"]).unwrap_err();
+    let err = run(&mock, true, &["drive", "2:2", "spare"]).unwrap_err();
     assert!(err.to_string().contains("hot spares"), "{err}");
     assert!(mock.raid_actions().is_empty());
 }

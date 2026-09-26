@@ -36,26 +36,6 @@ pub fn blocks(n: u64) -> String {
 }
 
 #[derive(Serialize, Clone, Debug)]
-pub struct ControllerEntry {
-    pub index: usize,
-    pub host_no: u32,
-    pub pci_address: Option<String>,
-    pub product_name: Option<String>,
-    pub serial_number: Option<String>,
-    pub package_version: Option<String>,
-    pub firmware_version: Option<String>,
-    pub volumes: Option<u16>,
-    pub drives: Option<u16>,
-    pub roc_celsius: Option<u8>,
-    pub error: Option<String>,
-}
-
-#[derive(Serialize, Clone, Debug)]
-pub struct ControllerList {
-    pub controllers: Vec<ControllerEntry>,
-}
-
-#[derive(Serialize, Clone, Debug)]
 pub struct ControllerSummary {
     pub index: usize,
     pub host_no: u32,
@@ -74,6 +54,14 @@ pub struct TemperatureReport {
     pub controller: usize,
     pub roc_celsius: Option<u8>,
     pub controller_celsius: Option<u8>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct Temperatures {
+    #[serde(flatten)]
+    pub controller: TemperatureReport,
+    #[serde(flatten)]
+    pub drives: DriveTemperatures,
 }
 
 #[derive(Serialize, Clone, Debug)]
