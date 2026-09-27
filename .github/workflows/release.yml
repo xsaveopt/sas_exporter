@@ -24,9 +24,15 @@ jobs:
         working-directory: sasctl
         run: rustup toolchain install
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v6
         with:
-          workspaces: sasctl
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            sasctl/target
+          key: ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('sasctl/Cargo.lock', 'sasctl/rust-toolchain.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-${{ github.job }}-
 
       - name: rustfmt and clippy
         run: make -C sasctl lint
