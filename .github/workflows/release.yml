@@ -165,8 +165,15 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Create release
-        uses: softprops/action-gh-release@v3
-        with:
-          generate_release_notes: true
-          body: ${{ steps.vtsum.outputs.results }}
-          files: dist/*
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BODY: ${{ steps.vtsum.outputs.results }}
+        run: |
+          shopt -s nullglob
+          files=(dist/*)
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            [ -z "$BODY" ] || gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes "$BODY"
+            [ ${#files[@]} -eq 0 ] || gh release upload "$GITHUB_REF_NAME" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes "$BODY" --generate-notes
+          fi
